@@ -6,7 +6,6 @@ import { userProgress } from "@/db/schema";
 interface CheckinRequestBody {
   userId: string;
   exerciseId: number;
-  audioUrl: string;
 }
 
 function isValidUuid(value: string): boolean {
@@ -15,21 +14,12 @@ function isValidUuid(value: string): boolean {
   );
 }
 
-function isValidHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function parseRequestBody(body: unknown): CheckinRequestBody {
   if (!body || typeof body !== "object") {
     throw new Error("请求体格式无效");
   }
 
-  const { userId, exerciseId, audioUrl } = body as Partial<CheckinRequestBody>;
+  const { userId, exerciseId } = body as Partial<CheckinRequestBody>;
 
   if (!userId || typeof userId !== "string" || !isValidUuid(userId)) {
     throw new Error("userId 必须是有效的 UUID 字符串");
@@ -44,11 +34,7 @@ function parseRequestBody(body: unknown): CheckinRequestBody {
     throw new Error("exerciseId 必须是正整数");
   }
 
-  if (!audioUrl || typeof audioUrl !== "string" || !isValidHttpUrl(audioUrl)) {
-    throw new Error("audioUrl 必须是有效的 HTTP(S) 链接");
-  }
-
-  return { userId, exerciseId, audioUrl };
+  return { userId, exerciseId };
 }
 
 export async function POST(request: NextRequest) {
@@ -62,14 +48,13 @@ export async function POST(request: NextRequest) {
         userId: body.userId,
         exerciseId: body.exerciseId,
         status: "completed",
-        audioUrl: body.audioUrl,
+        audioUrl: null,
         completedAt,
       })
       .onConflictDoUpdate({
         target: [userProgress.userId, userProgress.exerciseId],
         set: {
           status: "completed",
-          audioUrl: body.audioUrl,
           completedAt,
         },
       })
@@ -86,8 +71,7 @@ export async function POST(request: NextRequest) {
     const status =
       message.includes("请求体") ||
       message.includes("userId") ||
-      message.includes("exerciseId") ||
-      message.includes("audioUrl")
+      message.includes("exerciseId")
         ? 400
         : 500;
 

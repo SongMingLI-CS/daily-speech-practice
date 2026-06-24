@@ -9,7 +9,6 @@ export type { ExerciseRow };
 /** 对应 user_progress 关联的打卡摘要 */
 export interface ExerciseProgressInfo {
   status: ProgressStatus;
-  audioUrl: string | null;
   completedAt: string | null;
 }
 
@@ -38,7 +37,6 @@ export interface GenerateExercisesSuccessResponse {
   count: ExerciseCount;
   exercises: CompleteExercise[];
   completedExerciseIds: number[];
-  completedAudioUrls: Record<number, string>;
 }
 
 export interface GenerateExercisesErrorResponse {
@@ -50,10 +48,7 @@ export type GenerateExercisesResponse =
   | GenerateExercisesSuccessResponse
   | GenerateExercisesErrorResponse;
 
-type ProgressInput = Pick<
-  UserProgress,
-  "status" | "audioUrl" | "completedAt"
->;
+type ProgressInput = Pick<UserProgress, "status" | "completedAt">;
 
 function toIsoString(value: Date | string | null | undefined): string | null {
   if (value == null) {
@@ -70,7 +65,6 @@ export function toExerciseProgressInfo(
 ): ExerciseProgressInfo {
   return {
     status: progress.status,
-    audioUrl: progress.audioUrl,
     completedAt: toIsoString(progress.completedAt),
   };
 }
@@ -91,23 +85,10 @@ export function toCompleteExercise(
   };
 }
 
-export function buildCompletedProgressMaps(
-  records: Array<{
-    exerciseId: number;
-    audioUrl: string | null;
-  }>,
-) {
-  const completedExerciseIds: number[] = [];
-  const completedAudioUrls: Record<number, string> = {};
-
-  for (const record of records) {
-    completedExerciseIds.push(record.exerciseId);
-    if (record.audioUrl) {
-      completedAudioUrls[record.exerciseId] = record.audioUrl;
-    }
-  }
-
-  return { completedExerciseIds, completedAudioUrls };
+export function buildCompletedExerciseIds(
+  records: Array<{ exerciseId: number }>,
+): number[] {
+  return records.map((record) => record.exerciseId);
 }
 
 export function mergeExercisesWithProgress(

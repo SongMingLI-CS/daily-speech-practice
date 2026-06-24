@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { exercises, userProgress } from "@/db/schema";
 import { ensureTestUser } from "@/lib/test-user";
 import {
-  buildCompletedProgressMaps,
+  buildCompletedExerciseIds,
   mergeExercisesWithProgress,
   type ExerciseCount,
   type ExerciseLanguage,
@@ -135,12 +135,10 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
   if (exerciseIds.length === 0) {
     return {
       completedExerciseIds: [] as number[],
-      completedAudioUrls: {} as Record<number, string>,
       progressByExerciseId: new Map<
         number,
         {
           status: "completed";
-          audioUrl: string | null;
           completedAt: Date | null;
         }
       >(),
@@ -151,7 +149,6 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
     .select({
       exerciseId: userProgress.exerciseId,
       status: userProgress.status,
-      audioUrl: userProgress.audioUrl,
       completedAt: userProgress.completedAt,
     })
     .from(userProgress)
@@ -163,21 +160,19 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
       ),
     );
 
-  const { completedExerciseIds, completedAudioUrls } =
-    buildCompletedProgressMaps(records);
+  const completedExerciseIds = buildCompletedExerciseIds(records);
 
   const progressByExerciseId = new Map(
     records.map((record) => [
       record.exerciseId,
       {
         status: "completed" as const,
-        audioUrl: record.audioUrl,
         completedAt: record.completedAt,
       },
     ]),
   );
 
-  return { completedExerciseIds, completedAudioUrls, progressByExerciseId };
+  return { completedExerciseIds, progressByExerciseId };
 }
 
 function buildGenerateSuccessResponse(
@@ -187,7 +182,6 @@ function buildGenerateSuccessResponse(
       number,
       {
         status: "completed";
-        audioUrl: string | null;
         completedAt: Date | null;
       }
     >;
@@ -265,7 +259,7 @@ export async function POST(request: NextRequest) {
     if (existingExercises.length >= count) {
       const todayExercises = existingExercises.slice(0, count);
       const exerciseIds = todayExercises.map((item) => item.id);
-      const { completedExerciseIds, completedAudioUrls, progressByExerciseId } =
+      const { completedExerciseIds, progressByExerciseId } =
         await fetchCompletedProgress(userId, exerciseIds);
 
       return NextResponse.json(
@@ -279,7 +273,6 @@ export async function POST(request: NextRequest) {
           exerciseRows: todayExercises,
           progressByExerciseId,
           completedExerciseIds,
-          completedAudioUrls,
         }),
       );
     }
@@ -307,7 +300,7 @@ export async function POST(request: NextRequest) {
     const allTodayExercises = await fetchTodayExercises(language, today);
     const todayExercises = allTodayExercises.slice(0, count);
     const exerciseIds = todayExercises.map((item) => item.id);
-    const { completedExerciseIds, completedAudioUrls, progressByExerciseId } =
+    const { completedExerciseIds, progressByExerciseId } =
       await fetchCompletedProgress(userId, exerciseIds);
 
     return NextResponse.json(
@@ -321,7 +314,6 @@ export async function POST(request: NextRequest) {
         exerciseRows: todayExercises,
         progressByExerciseId,
         completedExerciseIds,
-        completedAudioUrls,
       }),
     );
   } catch (error) {

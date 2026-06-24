@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
-import { TEST_USER_ID } from "@/lib/test-user";
+import { TEST_USER_ID } from "@/lib/test-user-constants";
 import {
   type CompleteExercise,
   type ExerciseCount,
@@ -10,14 +10,6 @@ import {
   isGenerateExercisesSuccess,
   parseGenerateExercisesResponse,
 } from "@/types/exercise";
-
-function revokeBlobUrls(urls: Record<number, string>) {
-  Object.values(urls).forEach((url) => {
-    if (url.startsWith("blob:")) {
-      URL.revokeObjectURL(url);
-    }
-  });
-}
 
 const LANGUAGE_OPTIONS: { value: ExerciseLanguage; label: string }[] = [
   { value: "zh", label: "中文" },
@@ -62,30 +54,19 @@ function EmptyState({ language }: { language: ExerciseLanguage }) {
 interface ExerciseCardProps {
   exercise: CompleteExercise;
   language: ExerciseLanguage;
-  isRecording: boolean;
-  isOtherRecording: boolean;
   isSubmitting: boolean;
   isCheckedIn: boolean;
-  audioUrl: string | null;
-  onStartRecording: (id: number) => void;
-  onStopRecording: () => void;
   onCheckIn: (id: number) => void;
 }
 
 function ExerciseCard({
   exercise,
   language,
-  isRecording,
-  isOtherRecording,
   isSubmitting,
   isCheckedIn,
-  audioUrl,
-  onStartRecording,
-  onStopRecording,
   onCheckIn,
 }: ExerciseCardProps) {
-  const canCheckIn =
-    Boolean(audioUrl) && !isRecording && !isSubmitting && !isCheckedIn;
+  const canCheckIn = !isSubmitting && !isCheckedIn;
 
   return (
     <article className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] p-6 shadow-xl backdrop-blur-sm transition-all duration-300 hover:border-amber-200/20 hover:bg-white/[0.06] sm:p-8">
@@ -123,39 +104,14 @@ function ExerciseCard({
         — 欢迎一起打卡学习 —
       </p>
 
-      {audioUrl && (
-        <div className="mb-5 rounded-xl border border-white/10 bg-black/20 p-3">
-          <audio controls src={audioUrl} className="w-full" />
-        </div>
-      )}
-
-      <div className="flex flex-col gap-3 sm:flex-row">
-        <button
-          type="button"
-          disabled={isOtherRecording}
-          onClick={() => (isRecording ? onStopRecording() : onStartRecording(exercise.id))}
-          className={`flex-1 rounded-xl px-4 py-3 text-sm font-medium tracking-wide transition-all disabled:cursor-not-allowed disabled:opacity-40 ${
-            isRecording
-              ? "bg-red-600/90 text-white shadow-lg shadow-red-900/30 hover:bg-red-600"
-              : "border border-white/15 bg-white/5 text-white/90 hover:border-amber-200/30 hover:bg-white/10"
-          }`}
-        >
-          {isRecording ? "停止录音（录音中...）" : "开始录音"}
-        </button>
-
-        <button
-          type="button"
-          disabled={!canCheckIn}
-          onClick={() => onCheckIn(exercise.id)}
-          className="flex-1 rounded-xl bg-amber-200/90 px-4 py-3 text-sm font-medium tracking-wide text-[#1A3020] transition-all hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/30"
-        >
-          {isSubmitting
-            ? "上传中..."
-            : isCheckedIn
-              ? "已完成打卡"
-              : "提交打卡"}
-        </button>
-      </div>
+      <button
+        type="button"
+        disabled={!canCheckIn}
+        onClick={() => onCheckIn(exercise.id)}
+        className="w-full rounded-xl bg-amber-200/90 px-4 py-3 text-sm font-medium tracking-wide text-[#1A3020] transition-all hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/30"
+      >
+        {isSubmitting ? "提交中..." : isCheckedIn ? "已完成打卡" : "完成打卡"}
+      </button>
     </article>
   );
 }
@@ -165,36 +121,9 @@ export default function HomePage() {
   const [count, setCount] = useState<ExerciseCount>(3);
   const [exercises, setExercises] = useState<CompleteExercise[]>([]);
   const [loading, setLoading] = useState(false);
-  const [recordingId, setRecordingId] = useState<number | null>(null);
   const [submittingId, setSubmittingId] = useState<number | null>(null);
-  const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});
-  const [audioBlobs, setAudioBlobs] = useState<Record<number, Blob>>({});
   const [checkedInIds, setCheckedInIds] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
-
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioChunksRef = useRef<BlobPart[]>([]);
-  const recordingExerciseIdRef = useRef<number | null>(null);
-
-  const cleanupStream = useCallback(() => {
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-  }, []);
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop();
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      stopRecording();
-      cleanupStream();
-      revokeBlobUrls(audioUrls);
-    };
-  }, [audioUrls, cleanupStream, stopRecording]);
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -221,14 +150,7 @@ export default function HomePage() {
       }
 
       setExercises(data.exercises);
-
-      setAudioUrls((prev) => {
-        revokeBlobUrls(prev);
-        return data.completedAudioUrls ?? {};
-      });
-      setAudioBlobs({});
       setCheckedInIds(new Set(data.completedExerciseIds ?? []));
-      setRecordingId(null);
       setSubmittingId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "未知错误");
@@ -237,59 +159,8 @@ export default function HomePage() {
     }
   };
 
-  const startRecording = async (exerciseId: number) => {
-    if (recordingId !== null) return;
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-
-      mediaStreamRef.current = stream;
-      mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
-      recordingExerciseIdRef.current = exerciseId;
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
-        });
-        const url = URL.createObjectURL(blob);
-
-        setAudioUrls((prev) => {
-          const oldUrl = prev[exerciseId];
-          if (oldUrl?.startsWith("blob:")) {
-            URL.revokeObjectURL(oldUrl);
-          }
-          return { ...prev, [exerciseId]: url };
-        });
-
-        setAudioBlobs((prev) => ({ ...prev, [exerciseId]: blob }));
-
-        cleanupStream();
-        mediaRecorderRef.current = null;
-        recordingExerciseIdRef.current = null;
-        setRecordingId(null);
-      };
-
-      recorder.start();
-      setRecordingId(exerciseId);
-      setError(null);
-    } catch {
-      cleanupStream();
-      setRecordingId(null);
-      setError("无法访问麦克风，请检查浏览器权限设置");
-    }
-  };
-
   const handleCheckIn = async (exerciseId: number) => {
-    const audioBlob = audioBlobs[exerciseId];
-    if (!audioBlob || submittingId !== null || checkedInIds.has(exerciseId)) {
+    if (submittingId !== null || checkedInIds.has(exerciseId)) {
       return;
     }
 
@@ -297,48 +168,12 @@ export default function HomePage() {
     setError(null);
 
     try {
-      const uploadResponse = await fetch("/api/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: TEST_USER_ID,
-          filename: `recording-${exerciseId}.webm`,
-          contentType: audioBlob.type || "audio/webm",
-        }),
-      });
-
-      const uploadData = (await uploadResponse.json()) as {
-        success?: boolean;
-        presignedUrl?: string;
-        publicUrl?: string;
-        error?: string;
-      };
-
-      if (!uploadResponse.ok || !uploadData.presignedUrl || !uploadData.publicUrl) {
-        throw new Error(uploadData.error ?? "获取上传授权失败");
-      }
-
-      const publicUrl = uploadData.publicUrl;
-
-      const putResponse = await fetch(uploadData.presignedUrl, {
-        method: "PUT",
-        body: audioBlob,
-        headers: {
-          "Content-Type": audioBlob.type || "audio/webm",
-        },
-      });
-
-      if (!putResponse.ok) {
-        throw new Error(`音频上传失败 (${putResponse.status})`);
-      }
-
       const checkinResponse = await fetch("/api/progress/checkin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           userId: TEST_USER_ID,
           exerciseId,
-          audioUrl: publicUrl,
         }),
       });
 
@@ -352,15 +187,6 @@ export default function HomePage() {
       }
 
       setCheckedInIds((prev) => new Set(prev).add(exerciseId));
-      setAudioUrls((prev) => ({
-        ...prev,
-        [exerciseId]: publicUrl,
-      }));
-      setAudioBlobs((prev) => {
-        const next = { ...prev };
-        delete next[exerciseId];
-        return next;
-      });
       window.alert("打卡成功！");
     } catch (err) {
       setError(err instanceof Error ? err.message : "打卡提交失败，请稍后重试");
@@ -466,13 +292,8 @@ export default function HomePage() {
                   key={exercise.id}
                   exercise={exercise}
                   language={language}
-                  isRecording={recordingId === exercise.id}
-                  isOtherRecording={recordingId !== null && recordingId !== exercise.id}
                   isSubmitting={submittingId === exercise.id}
                   isCheckedIn={checkedInIds.has(exercise.id)}
-                  audioUrl={audioUrls[exercise.id] ?? null}
-                  onStartRecording={startRecording}
-                  onStopRecording={stopRecording}
                   onCheckIn={handleCheckIn}
                 />
               ))}
