@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { signOut, useSession } from "next-auth/react";
 
-import { TEST_USER_ID } from "@/lib/test-user-constants";
 import {
   type CompleteExercise,
   type ExerciseCount,
   type ExerciseLanguage,
-  isGenerateExercisesSuccess,
   parseGenerateExercisesResponse,
 } from "@/types/exercise";
 
@@ -117,6 +117,8 @@ function ExerciseCard({
 }
 
 export default function HomePage() {
+  const router = useRouter();
+  const { data: session, status } = useSession();
   const [language, setLanguage] = useState<ExerciseLanguage>("zh");
   const [count, setCount] = useState<ExerciseCount>(3);
   const [exercises, setExercises] = useState<CompleteExercise[]>([]);
@@ -124,6 +126,19 @@ export default function HomePage() {
   const [submittingId, setSubmittingId] = useState<number | null>(null);
   const [checkedInIds, setCheckedInIds] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (status === "unauthenticated") router.replace("/login");
+  }, [router, status]);
+
+  const handleLanguageChange = (nextLanguage: ExerciseLanguage) => {
+    if (nextLanguage === language) return;
+    setLanguage(nextLanguage);
+    setExercises([]);
+    setCheckedInIds(new Set());
+    setSubmittingId(null);
+    setError(null);
+  };
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -134,7 +149,6 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: TEST_USER_ID,
           language,
           count,
         }),
@@ -142,15 +156,16 @@ export default function HomePage() {
 
       const data = parseGenerateExercisesResponse(await response.json());
 
-      if (!response.ok || !isGenerateExercisesSuccess(data)) {
-        const message = isGenerateExercisesSuccess(data)
-          ? "生成练习失败，请稍后重试"
-          : data.error;
-        throw new Error(message);
+      if (response.status === 401) {
+        router.replace("/login");
+        return;
+      }
+      if (!response.ok || data.code !== "OK" || !data.data) {
+        throw new Error(data.message);
       }
 
-      setExercises(data.exercises);
-      setCheckedInIds(new Set(data.completedExerciseIds ?? []));
+      setExercises(data.data.exercises);
+      setCheckedInIds(new Set(data.data.completedExerciseIds));
       setSubmittingId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "未知错误");
@@ -172,18 +187,22 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: TEST_USER_ID,
           exerciseId,
         }),
       });
 
-      const checkinData = (await checkinResponse.json()) as {
-        success?: boolean;
-        error?: string;
-      };
+      const checkinData: unknown = await checkinResponse.json();
+      const checkinPayload =
+        checkinData && typeof checkinData === "object"
+          ? (checkinData as Record<string, unknown>)
+          : null;
 
-      if (!checkinResponse.ok || !checkinData.success) {
-        throw new Error(checkinData.error ?? "打卡记录保存失败");
+      if (!checkinResponse.ok || checkinPayload?.code !== "OK") {
+        throw new Error(
+          typeof checkinPayload?.message === "string"
+            ? checkinPayload.message
+            : "打卡记录保存失败",
+        );
       }
 
       setCheckedInIds((prev) => new Set(prev).add(exerciseId));
@@ -200,6 +219,10 @@ export default function HomePage() {
       ? "bg-gradient-to-br from-[#1A3020] via-[#152820] to-[#0f1f18]"
       : "bg-gradient-to-br from-[#122B46] via-[#0f2238] to-[#0a1628]";
 
+  if (status === "loading" || status === "unauthenticated") {
+    return <div className="min-h-screen bg-[#111]" />;
+  }
+
   return (
     <div className={`min-h-full ${pageBg} transition-colors duration-500`}>
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -209,7 +232,7 @@ export default function HomePage() {
 
       <div className="relative mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12">
         <header className="mb-10 space-y-6">
-          <div className="text-center">
+          <div className="relative text-center">
             <p className="mb-2 text-xs tracking-[0.4em] text-amber-200/50 uppercase">
               Daily Speech Practice
             </p>
@@ -220,6 +243,16 @@ export default function HomePage() {
             >
               {language === "zh" ? "每日口才打卡" : "Daily Eloquence Check-in"}
             </h1>
+            <div className="mt-4 flex items-center justify-center gap-3 text-xs text-white/45">
+              <span>{session?.user?.name ?? session?.user?.email}</span>
+              <button
+                type="button"
+                onClick={() => signOut({ callbackUrl: "/login" })}
+                className="underline underline-offset-4 hover:text-white/80"
+              >
+                退出登录
+              </button>
+            </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-black/20 p-4 backdrop-blur-md sm:p-5">
@@ -230,7 +263,7 @@ export default function HomePage() {
                     <button
                       key={option.value}
                       type="button"
-                      onClick={() => setLanguage(option.value)}
+                      onClick={() => handleLanguageChange(option.value)}
                       className={`rounded-lg px-4 py-2 text-sm font-medium transition-all ${
                         language === option.value
                           ? "bg-amber-200/90 text-[#1A3020] shadow-sm"

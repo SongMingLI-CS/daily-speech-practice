@@ -1,22 +1,30 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
-import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 
+import { and, asc, eq, inArray, lt } from "drizzle-orm";
+import { NextRequest } from "next/server";
+
+import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
-import { exercises, userProgress } from "@/db/schema";
-import { ensureTestUser } from "@/lib/test-user";
+import {
+  exerciseGenerationLocks,
+  exercises,
+  userProgress,
+} from "@/db/schema";
+import { getRateLimitResponse } from "@/lib/api-rate-limit";
+import { apiError, apiSuccess } from "@/lib/api-response";
 import {
   buildCompletedExerciseIds,
   mergeExercisesWithProgress,
   type ExerciseCount,
   type ExerciseLanguage,
-  type GenerateExercisesSuccessResponse,
+  type GenerateExercisesData,
 } from "@/types/exercise";
 
 const VALID_LANGUAGES = ["zh", "en"] as const;
 const VALID_COUNTS = [1, 3, 5] as const;
+const GENERATION_LEASE_MS = 90_000;
 
 interface GenerateRequestBody {
-  userId: string;
   language: ExerciseLanguage;
   count: ExerciseCount;
 }
@@ -27,20 +35,10 @@ interface GeneratedExercisePayload {
   content: string;
 }
 
-const SYSTEM_PROMPT = `你是一个专业的口才训练教练和语言专家。你的任务是为用户生成用于"每日口才/练嘴"挑战的练习文本。
-根据用户请求的语言（zh = 中文，en = 英文）和数量，生成对应篇数的练习内容。
-【文本风格要求】：
-1. 当 language = 'zh' 时：模仿短视频爆款文案、名家散文（如史铁生）、职场即兴演讲、或充满哲理的情感金句。语气要有感染力、画面感、适合大声朗读。包含开头招呼语（如"各位各位："）以及有感召力的结尾（如"且将岁月磨心性，静待清风赴远山。"）。
-2. 当 language = 'en' 时：分为经典演讲金句或地道日常/职场高级口语汇报（Idioms & Business Expressions）。杜绝枯燥的课本英语，必须是具有"节奏感"、"连读多"、"适合练腔调"的现代英文短文。同样需要有自然有力的 Head 和 Tail。
-【输出格式要求】：
-你必须且只能返回一个标准的 JSON 数组，不要包含任何 Markdown 标记（如 \`\`\`json）。格式如下：
-[
-  {
-    "title": "每日练嘴 · 第 X 天",
-    "category": "分类名",
-    "content": "正文内容，使用 \\n 来换行保持排版美观。"
-  }
-]`;
+const SYSTEM_PROMPT = `你是专业的口才训练教练和语言专家。请生成适合每日朗读训练的文本。
+中文内容需要有感染力和画面感；英文内容应现代、自然、有节奏感。
+你必须且只能返回标准 JSON 数组，不要包含 Markdown 标记。每项格式为：
+{"title":"标题","category":"分类名","content":"正文，可使用 \\n 换行"}`;
 
 function getTodayDateString(timeZone = "Asia/Shanghai"): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -51,74 +49,48 @@ function getTodayDateString(timeZone = "Asia/Shanghai"): string {
   }).format(new Date());
 }
 
-function isValidUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value,
-  );
-}
-
 function parseRequestBody(body: unknown): GenerateRequestBody {
-  if (!body || typeof body !== "object") {
-    throw new Error("请求体格式无效");
-  }
-
-  const { userId, language, count } = body as Partial<GenerateRequestBody>;
-
-  if (!userId || typeof userId !== "string" || !isValidUuid(userId)) {
-    throw new Error("userId 必须是有效的 UUID 字符串");
-  }
-
+  if (!body || typeof body !== "object") throw new Error("请求体格式无效");
+  const { language, count } = body as Partial<GenerateRequestBody>;
   if (!language || !VALID_LANGUAGES.includes(language)) {
     throw new Error("language 必须是 'zh' 或 'en'");
   }
-
   if (count === undefined || !VALID_COUNTS.includes(count)) {
     throw new Error("count 必须是 1、3 或 5");
   }
-
-  return { userId, language, count };
+  return { language, count };
 }
 
 function parseDeepSeekExercises(rawContent: string): GeneratedExercisePayload[] {
   let cleaned = rawContent.trim();
-
   const fencedMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fencedMatch) {
-    cleaned = fencedMatch[1].trim();
-  }
+  if (fencedMatch) cleaned = fencedMatch[1].trim();
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(cleaned);
   } catch {
-    throw new Error("DeepSeek 返回的内容不是合法的 JSON");
+    throw new Error("AI_RESPONSE_INVALID");
   }
+  if (!Array.isArray(parsed)) throw new Error("AI_RESPONSE_INVALID");
 
-  if (!Array.isArray(parsed)) {
-    throw new Error("DeepSeek 返回的 JSON 不是数组格式");
-  }
-
-  return parsed.map((item, index) => {
-    if (!item || typeof item !== "object") {
-      throw new Error(`DeepSeek 返回的第 ${index + 1} 项格式无效`);
-    }
-
+  return parsed.map((item) => {
+    if (!item || typeof item !== "object") throw new Error("AI_RESPONSE_INVALID");
     const { title, category, content } = item as Record<string, unknown>;
-
-    if (typeof title !== "string" || !title.trim()) {
-      throw new Error(`DeepSeek 返回的第 ${index + 1} 项缺少有效 title`);
+    if (
+      typeof title !== "string" ||
+      typeof category !== "string" ||
+      typeof content !== "string" ||
+      !title.trim() ||
+      !category.trim() ||
+      !content.trim()
+    ) {
+      throw new Error("AI_RESPONSE_INVALID");
     }
-    if (typeof category !== "string" || !category.trim()) {
-      throw new Error(`DeepSeek 返回的第 ${index + 1} 项缺少有效 category`);
-    }
-    if (typeof content !== "string" || !content.trim()) {
-      throw new Error(`DeepSeek 返回的第 ${index + 1} 项缺少有效 content`);
-    }
-
     return {
-      title: title.trim(),
-      category: category.trim(),
-      content: content.trim(),
+      title: title.trim().slice(0, 120),
+      category: category.trim().slice(0, 60),
+      content: content.trim().slice(0, 10_000),
     };
   });
 }
@@ -128,7 +100,40 @@ async function fetchTodayExercises(language: ExerciseLanguage, today: string) {
     .select()
     .from(exercises)
     .where(and(eq(exercises.date, today), eq(exercises.language, language)))
-    .orderBy(asc(exercises.id));
+    .orderBy(asc(exercises.index), asc(exercises.id));
+}
+
+async function acquireGenerationLock(language: ExerciseLanguage, today: string) {
+  const ownerToken = randomUUID();
+  const now = new Date();
+  const lockedUntil = new Date(now.getTime() + GENERATION_LEASE_MS);
+  const [lock] = await db
+    .insert(exerciseGenerationLocks)
+    .values({ date: today, language, ownerToken, lockedUntil })
+    .onConflictDoUpdate({
+      target: [exerciseGenerationLocks.date, exerciseGenerationLocks.language],
+      set: { ownerToken, lockedUntil },
+      setWhere: lt(exerciseGenerationLocks.lockedUntil, now),
+    })
+    .returning({ ownerToken: exerciseGenerationLocks.ownerToken });
+
+  return lock?.ownerToken === ownerToken ? ownerToken : null;
+}
+
+async function releaseGenerationLock(
+  language: ExerciseLanguage,
+  today: string,
+  ownerToken: string,
+) {
+  await db
+    .delete(exerciseGenerationLocks)
+    .where(
+      and(
+        eq(exerciseGenerationLocks.date, today),
+        eq(exerciseGenerationLocks.language, language),
+        eq(exerciseGenerationLocks.ownerToken, ownerToken),
+      ),
+    );
 }
 
 async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
@@ -137,10 +142,7 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
       completedExerciseIds: [] as number[],
       progressByExerciseId: new Map<
         number,
-        {
-          status: "completed";
-          completedAt: Date | null;
-        }
+        { status: "completed"; completedAt: Date | null }
       >(),
     };
   }
@@ -160,182 +162,151 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
       ),
     );
 
-  const completedExerciseIds = buildCompletedExerciseIds(records);
-
-  const progressByExerciseId = new Map(
-    records.map((record) => [
-      record.exerciseId,
-      {
-        status: "completed" as const,
-        completedAt: record.completedAt,
-      },
-    ]),
-  );
-
-  return { completedExerciseIds, progressByExerciseId };
+  return {
+    completedExerciseIds: buildCompletedExerciseIds(records),
+    progressByExerciseId: new Map(
+      records.map((record) => [
+        record.exerciseId,
+        { status: "completed" as const, completedAt: record.completedAt },
+      ]),
+    ),
+  };
 }
 
-function buildGenerateSuccessResponse(
-  params: Omit<GenerateExercisesSuccessResponse, "success" | "exercises"> & {
-    exerciseRows: Awaited<ReturnType<typeof fetchTodayExercises>>;
-    progressByExerciseId: Map<
-      number,
-      {
-        status: "completed";
-        completedAt: Date | null;
-      }
-    >;
-  },
-): GenerateExercisesSuccessResponse {
-  const { exerciseRows, progressByExerciseId, ...rest } = params;
-
+async function buildResponse(
+  userId: string,
+  language: ExerciseLanguage,
+  count: ExerciseCount,
+  today: string,
+  cached: boolean,
+  generated: number,
+): Promise<GenerateExercisesData> {
+  const rows = (await fetchTodayExercises(language, today)).slice(0, count);
+  const { completedExerciseIds, progressByExerciseId } =
+    await fetchCompletedProgress(userId, rows.map((row) => row.id));
   return {
-    success: true,
-    ...rest,
-    exercises: mergeExercisesWithProgress(exerciseRows, progressByExerciseId),
+    cached,
+    generated,
+    date: today,
+    language,
+    count,
+    exercises: mergeExercisesWithProgress(rows, progressByExerciseId),
+    completedExerciseIds,
   };
 }
 
 async function generateExercisesWithDeepSeek(
   language: ExerciseLanguage,
-  needToGenerate: number,
+  count: number,
 ): Promise<GeneratedExercisePayload[]> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    throw new Error("DEEPSEEK_API_KEY 环境变量未配置");
-  }
+  if (!apiKey) throw new Error("AI_NOT_CONFIGURED");
 
-  const response = await fetch(
-    "https://api.deepseek.com/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `请帮我生成 ${needToGenerate} 篇语言为 ${language} 的口才练习文本。`,
-          },
-        ],
-        temperature: 0.8,
-      }),
+  const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
     },
-  );
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `生成 ${count} 篇语言为 ${language} 的练习。` },
+      ],
+      temperature: 0.8,
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `DeepSeek API 请求失败 (${response.status}): ${errorText}`,
-    );
-  }
-
+  if (!response.ok) throw new Error("AI_PROVIDER_ERROR");
   const data = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
-
   const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("DeepSeek API 返回内容为空");
-  }
+  if (!content) throw new Error("AI_RESPONSE_INVALID");
 
-  return parseDeepSeekExercises(content);
+  const generated = parseDeepSeekExercises(content);
+  if (generated.length !== count) throw new Error("AI_RESPONSE_INVALID");
+  return generated;
 }
 
 export async function POST(request: NextRequest) {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return apiError("UNAUTHORIZED", "请先登录", 401);
+  const limited = await getRateLimitResponse(
+    "generate",
+    currentUser.id,
+    "生成请求过于频繁，请稍后再试",
+  );
+  if (limited) return limited;
+
+  let body: GenerateRequestBody;
   try {
-    const body = parseRequestBody(await request.json());
-    const { userId, language, count } = body;
-    const today = getTodayDateString();
+    body = parseRequestBody(await request.json());
+  } catch (error) {
+    return apiError(
+      "VALIDATION_ERROR",
+      error instanceof Error ? error.message : "请求参数不正确",
+      400,
+    );
+  }
 
-    await ensureTestUser(userId);
+  const { language, count } = body;
+  const today = getTodayDateString();
 
-    const existingExercises = await fetchTodayExercises(language, today);
-
-    if (existingExercises.length >= count) {
-      const todayExercises = existingExercises.slice(0, count);
-      const exerciseIds = todayExercises.map((item) => item.id);
-      const { completedExerciseIds, progressByExerciseId } =
-        await fetchCompletedProgress(userId, exerciseIds);
-
-      return NextResponse.json(
-        buildGenerateSuccessResponse({
-          cached: true,
-          generated: 0,
-          userId,
-          date: today,
-          language,
-          count,
-          exerciseRows: todayExercises,
-          progressByExerciseId,
-          completedExerciseIds,
-        }),
+  try {
+    const existing = await fetchTodayExercises(language, today);
+    if (existing.length >= count) {
+      return apiSuccess(
+        await buildResponse(currentUser.id, language, count, today, true, 0),
       );
     }
 
-    const needToGenerate = count - existingExercises.length;
-    const generatedPayload = await generateExercisesWithDeepSeek(
-      language,
-      needToGenerate,
-    );
-
-    if (generatedPayload.length === 0) {
-      throw new Error("DeepSeek 未生成任何练习文本");
+    const ownerToken = await acquireGenerationLock(language, today);
+    if (!ownerToken) {
+      return apiError(
+        "GENERATION_IN_PROGRESS",
+        "今日练习正在生成，请稍后重试",
+        409,
+      );
     }
 
-    await db.insert(exercises).values(
-      generatedPayload.map((item) => ({
-        title: item.title,
-        content: item.content,
-        language,
-        category: item.category,
-        date: today,
-      })),
-    );
+    try {
+      const refreshed = await fetchTodayExercises(language, today);
+      if (refreshed.length < count) {
+        const need = count - refreshed.length;
+        const generated = await generateExercisesWithDeepSeek(language, need);
+        await db
+          .insert(exercises)
+          .values(
+            generated.map((item, offset) => ({
+              ...item,
+              language,
+              date: today,
+              index: refreshed.length + offset + 1,
+            })),
+          )
+          .onConflictDoNothing();
 
-    const allTodayExercises = await fetchTodayExercises(language, today);
-    const todayExercises = allTodayExercises.slice(0, count);
-    const exerciseIds = todayExercises.map((item) => item.id);
-    const { completedExerciseIds, progressByExerciseId } =
-      await fetchCompletedProgress(userId, exerciseIds);
+        return apiSuccess(
+          await buildResponse(currentUser.id, language, count, today, false, need),
+          "今日练习生成成功",
+        );
+      }
 
-    return NextResponse.json(
-      buildGenerateSuccessResponse({
-        cached: false,
-        generated: generatedPayload.length,
-        userId,
-        date: today,
-        language,
-        count,
-        exerciseRows: todayExercises,
-        progressByExerciseId,
-        completedExerciseIds,
-      }),
-    );
+      return apiSuccess(
+        await buildResponse(currentUser.id, language, count, today, true, 0),
+      );
+    } finally {
+      try {
+        await releaseGenerationLock(language, today, ownerToken);
+      } catch (releaseError) {
+        console.error("[release exercise generation lock]", releaseError);
+      }
+    }
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "生成练习文本时发生未知错误";
-
-    const status =
-      message.includes("请求体") ||
-      message.includes("userId") ||
-      message.includes("language") ||
-      message.includes("count")
-        ? 400
-        : 500;
-
     console.error("[POST /api/exercises/generate]", error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: message,
-      },
-      { status },
-    );
+    return apiError("GENERATION_FAILED", "生成练习失败，请稍后重试", 500);
   }
 }

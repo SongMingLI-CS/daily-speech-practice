@@ -1,88 +1,68 @@
-import { NextRequest, NextResponse } from "next/server";
+import { eq } from "drizzle-orm";
+import { NextRequest } from "next/server";
 
+import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
-import { userProgress } from "@/db/schema";
+import { exercises, userProgress, users } from "@/db/schema";
+import { getRateLimitResponse } from "@/lib/api-rate-limit";
+import { apiError, apiSuccess } from "@/lib/api-response";
 
-interface CheckinRequestBody {
-  userId: string;
-  exerciseId: number;
-}
-
-function isValidUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value,
-  );
-}
-
-function parseRequestBody(body: unknown): CheckinRequestBody {
-  if (!body || typeof body !== "object") {
-    throw new Error("请求体格式无效");
-  }
-
-  const { userId, exerciseId } = body as Partial<CheckinRequestBody>;
-
-  if (!userId || typeof userId !== "string" || !isValidUuid(userId)) {
-    throw new Error("userId 必须是有效的 UUID 字符串");
-  }
-
-  if (
-    exerciseId === undefined ||
-    typeof exerciseId !== "number" ||
-    !Number.isInteger(exerciseId) ||
-    exerciseId <= 0
-  ) {
-    throw new Error("exerciseId 必须是正整数");
-  }
-
-  return { userId, exerciseId };
+function parseExerciseId(body: unknown): number | null {
+  if (!body || typeof body !== "object") return null;
+  const { exerciseId } = body as { exerciseId?: unknown };
+  return typeof exerciseId === "number" &&
+    Number.isInteger(exerciseId) &&
+    exerciseId > 0
+    ? exerciseId
+    : null;
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = parseRequestBody(await request.json());
-    const completedAt = new Date();
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return apiError("UNAUTHORIZED", "请先登录", 401);
+  const limited = await getRateLimitResponse(
+    "checkin",
+    currentUser.id,
+    "打卡请求过于频繁，请稍后再试",
+  );
+  if (limited) return limited;
 
+  const exerciseId = parseExerciseId(await request.json().catch(() => null));
+  if (!exerciseId) {
+    return apiError("VALIDATION_ERROR", "exerciseId 必须是正整数", 400);
+  }
+
+  const [[user], [exercise]] = await Promise.all([
+    db.select({ id: users.id }).from(users).where(eq(users.id, currentUser.id)).limit(1),
+    db
+      .select({ id: exercises.id })
+      .from(exercises)
+      .where(eq(exercises.id, exerciseId))
+      .limit(1),
+  ]);
+
+  if (!user) return apiError("USER_NOT_FOUND", "当前账号不存在", 404);
+  if (!exercise) return apiError("EXERCISE_NOT_FOUND", "练习不存在", 404);
+
+  try {
+    const completedAt = new Date();
     const [record] = await db
       .insert(userProgress)
       .values({
-        userId: body.userId,
-        exerciseId: body.exerciseId,
+        userId: currentUser.id,
+        exerciseId,
         status: "completed",
-        audioUrl: null,
         completedAt,
       })
       .onConflictDoUpdate({
         target: [userProgress.userId, userProgress.exerciseId],
-        set: {
-          status: "completed",
-          completedAt,
-        },
+        set: { status: "completed", completedAt },
       })
       .returning();
 
-    return NextResponse.json({
-      success: true,
-      progress: record,
-    });
+    return apiSuccess({ progress: record }, "打卡成功");
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "打卡记录保存失败";
-
-    const status =
-      message.includes("请求体") ||
-      message.includes("userId") ||
-      message.includes("exerciseId")
-        ? 400
-        : 500;
-
     console.error("[POST /api/progress/checkin]", error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: message,
-      },
-      { status },
-    );
+    return apiError("CHECKIN_FAILED", "打卡记录保存失败，请稍后重试", 500);
   }
 }

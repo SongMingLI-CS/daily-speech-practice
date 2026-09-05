@@ -1,4 +1,5 @@
 import type { Exercise as ExerciseRow, UserProgress } from "@/db/schema";
+import type { ApiResponse } from "@/lib/api-response";
 
 export type ExerciseLanguage = "zh" | "en";
 export type ExerciseCount = 1 | 3 | 5;
@@ -23,15 +24,14 @@ export interface CompleteExercise {
   language: ExerciseLanguage;
   category: string;
   date: string;
+  index: number;
   createdAt: string;
   progress: ExerciseProgressInfo | null;
 }
 
-export interface GenerateExercisesSuccessResponse {
-  success: true;
+export interface GenerateExercisesData {
   cached: boolean;
   generated: number;
-  userId: string;
   date: string;
   language: ExerciseLanguage;
   count: ExerciseCount;
@@ -39,14 +39,7 @@ export interface GenerateExercisesSuccessResponse {
   completedExerciseIds: number[];
 }
 
-export interface GenerateExercisesErrorResponse {
-  success: false;
-  error: string;
-}
-
-export type GenerateExercisesResponse =
-  | GenerateExercisesSuccessResponse
-  | GenerateExercisesErrorResponse;
+export type GenerateExercisesResponse = ApiResponse<GenerateExercisesData>;
 
 type ProgressInput = Pick<UserProgress, "status" | "completedAt">;
 
@@ -80,6 +73,7 @@ export function toCompleteExercise(
     language: row.language,
     category: row.category,
     date: row.date,
+    index: row.index,
     createdAt: toIsoString(row.createdAt) ?? new Date(0).toISOString(),
     progress: progress ? toExerciseProgressInfo(progress) : null,
   };
@@ -100,30 +94,25 @@ export function mergeExercisesWithProgress(
   );
 }
 
-export function isGenerateExercisesSuccess(
-  data: GenerateExercisesResponse,
-): data is GenerateExercisesSuccessResponse {
-  return data.success === true;
-}
-
 export function parseGenerateExercisesResponse(
   data: unknown,
 ): GenerateExercisesResponse {
   if (!data || typeof data !== "object") {
-    return { success: false, error: "响应格式无效" };
+    return { code: "INVALID_RESPONSE", data: null, message: "响应格式无效" };
   }
 
   const payload = data as Record<string, unknown>;
 
-  if (payload.success !== true) {
+  if (payload.code !== "OK") {
     return {
-      success: false,
-      error:
-        typeof payload.error === "string"
-          ? payload.error
+      code: typeof payload.code === "string" ? payload.code : "REQUEST_FAILED",
+      data: null,
+      message:
+        typeof payload.message === "string"
+          ? payload.message
           : "生成练习失败，请稍后重试",
     };
   }
 
-  return payload as unknown as GenerateExercisesSuccessResponse;
+  return payload as unknown as GenerateExercisesResponse;
 }
