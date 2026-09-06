@@ -2,9 +2,11 @@ import { and, desc, eq, isNotNull } from "drizzle-orm";
 
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
-import { exercises, userProgress } from "@/db/schema";
+import { exercises, userProgress, userSettings } from "@/db/schema";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
+import { formatDateKey } from "@/lib/date";
+import { buildStreakStats } from "@/lib/streak";
 
 export async function GET() {
   const currentUser = await getCurrentUser();
@@ -39,6 +41,29 @@ export async function GET() {
       .orderBy(desc(userProgress.completedAt), desc(userProgress.id))
       .limit(90);
 
+    const [settings] = await db
+      .select({ timeZone: userSettings.timeZone })
+      .from(userSettings)
+      .where(eq(userSettings.userId, currentUser.id))
+      .limit(1);
+    const timeZone = settings?.timeZone ?? "Asia/Shanghai";
+
+    // 打卡天数按用户时区的自然日统计（全量，不做 90 条截断）
+    const completedRows = await db
+      .select({ completedAt: userProgress.completedAt })
+      .from(userProgress)
+      .where(
+        and(
+          eq(userProgress.userId, currentUser.id),
+          eq(userProgress.status, "completed"),
+          isNotNull(userProgress.score),
+          isNotNull(userProgress.completedAt),
+        ),
+      );
+    const practiceDates = completedRows
+      .filter((row): row is { completedAt: Date } => row.completedAt !== null)
+      .map((row) => formatDateKey(row.completedAt, timeZone));
+
     const points = rows.map((row) => ({
       date: row.date,
       score: row.score ?? 0,
@@ -46,8 +71,9 @@ export async function GET() {
       language: row.language,
       title: row.title,
     }));
+    const stats = buildStreakStats(practiceDates, formatDateKey(new Date(), timeZone));
 
-    return apiSuccess({ points }, "获取评分趋势成功");
+    return apiSuccess({ points, stats }, "获取评分趋势成功");
   } catch (error) {
     console.error("[GET /api/progress/history]", error);
     return apiError("HISTORY_FAILED", "获取评分趋势失败，请稍后重试", 500);
