@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 
+import { useAudioRecorder, type AudioRecording } from "@/hooks/use-audio-recorder";
+import type { ApiResponse } from "@/lib/api-response";
+import type { AudioUploadAuthorization, SpeechAssessment } from "@/types/assessment";
 import {
   type CompleteExercise,
   type ExerciseCount,
@@ -56,7 +59,15 @@ interface ExerciseCardProps {
   language: ExerciseLanguage;
   isSubmitting: boolean;
   isCheckedIn: boolean;
-  onCheckIn: (id: number) => void;
+  isOtherRecording: boolean;
+  assessment?: SpeechAssessment;
+  onRecordingChange: (exerciseId: number, active: boolean) => void;
+  onCheckIn: (id: number, recording: AudioRecording) => Promise<void>;
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.floor(durationMs / 1_000);
+  return `${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
 }
 
 function ExerciseCard({
@@ -64,9 +75,53 @@ function ExerciseCard({
   language,
   isSubmitting,
   isCheckedIn,
+  isOtherRecording,
+  assessment,
+  onRecordingChange,
   onCheckIn,
 }: ExerciseCardProps) {
-  const canCheckIn = !isSubmitting && !isCheckedIn;
+  const recorder = useAudioRecorder();
+  const submittedRecordingUrlRef = useRef<string | null>(null);
+  const visibleScore = assessment?.overallScore ?? exercise.progress?.score;
+  const pronunciationScore =
+    assessment?.pronunciationScore ?? exercise.progress?.pronunciationScore;
+  const fluencyScore = assessment?.fluencyScore ?? exercise.progress?.fluencyScore;
+  const completenessScore =
+    assessment?.completenessScore ?? exercise.progress?.completenessScore;
+  const feedback = assessment?.feedback ?? exercise.progress?.feedback;
+  const audioUrl = assessment?.audioUrl ?? exercise.progress?.audioUrl ?? recorder.recording?.url;
+  const canSubmit = Boolean(recorder.recording) && !isSubmitting;
+
+  useEffect(() => {
+    if (recorder.status === "recorded" || recorder.status === "error") {
+      onRecordingChange(exercise.id, false);
+    }
+  }, [exercise.id, onRecordingChange, recorder.status]);
+
+  useEffect(() => {
+    const currentRecording = recorder.recording;
+    if (
+      recorder.status !== "recorded" ||
+      !currentRecording ||
+      isCheckedIn ||
+      submittedRecordingUrlRef.current === currentRecording.url
+    ) {
+      return;
+    }
+    submittedRecordingUrlRef.current = currentRecording.url;
+    void onCheckIn(exercise.id, currentRecording);
+  }, [exercise.id, isCheckedIn, onCheckIn, recorder.recording, recorder.status]);
+
+  const startRecording = async () => {
+    onRecordingChange(exercise.id, true);
+    const started = await recorder.start();
+    if (!started) onRecordingChange(exercise.id, false);
+  };
+
+  const stopRecording = () => {
+    recorder.stop();
+    onRecordingChange(exercise.id, false);
+  };
 
   return (
     <article className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] p-6 shadow-xl backdrop-blur-sm transition-all duration-300 hover:border-amber-200/20 hover:bg-white/[0.06] sm:p-8">
@@ -104,16 +159,110 @@ function ExerciseCard({
         — 欢迎一起打卡学习 —
       </p>
 
-      <button
-        type="button"
-        disabled={!canCheckIn}
-        onClick={() => onCheckIn(exercise.id)}
-        className="w-full rounded-xl bg-amber-200/90 px-4 py-3 text-sm font-medium tracking-wide text-[#1A3020] transition-all hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/30"
-      >
-        {isSubmitting ? "提交中..." : isCheckedIn ? "已完成打卡" : "完成打卡"}
-      </button>
+      <div className="space-y-4 rounded-xl border border-white/10 bg-black/20 p-4">
+        <div className="flex items-center justify-between text-xs text-white/50">
+          <span>
+            {recorder.status === "recording"
+              ? "正在录音"
+              : recorder.status === "paused"
+                ? "录音已暂停"
+                : recorder.status === "requesting-permission"
+                  ? "等待麦克风权限"
+                  : recorder.recording
+                    ? "录音已完成"
+                    : "最长 03:00 · 已启用浏览器降噪"}
+          </span>
+          <span>{formatDuration(recorder.elapsedMs)} / 03:00</span>
+        </div>
+
+        {(recorder.status === "recording" || recorder.status === "paused") && (
+          <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+            <div
+              className="h-full rounded-full bg-amber-200 transition-[width] duration-100"
+              style={{ width: `${Math.max(3, recorder.level * 100)}%` }}
+            />
+          </div>
+        )}
+
+        {audioUrl && <audio controls className="w-full" src={audioUrl} />}
+        {recorder.error && <p className="text-sm text-red-200">{recorder.error}</p>}
+
+        <div className="grid grid-cols-2 gap-3 sm:flex">
+          {(recorder.status === "idle" || recorder.status === "error") && (
+            <button
+              type="button"
+              disabled={isOtherRecording || isSubmitting || isCheckedIn}
+              onClick={startRecording}
+              className="rounded-lg border border-white/15 px-4 py-2 text-sm text-white/90 hover:bg-white/10 disabled:opacity-40"
+            >
+              开始录音
+            </button>
+          )}
+          {recorder.status === "recording" && (
+            <>
+              <button type="button" onClick={recorder.pause} className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+                暂停
+              </button>
+              <button type="button" onClick={stopRecording} className="rounded-lg border border-red-300/30 px-4 py-2 text-sm text-red-100 hover:bg-red-400/10">
+                完成录音
+              </button>
+            </>
+          )}
+          {recorder.status === "paused" && (
+            <>
+              <button type="button" onClick={recorder.resume} className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/10">
+                继续
+              </button>
+              <button type="button" onClick={stopRecording} className="rounded-lg border border-red-300/30 px-4 py-2 text-sm text-red-100 hover:bg-red-400/10">
+                完成录音
+              </button>
+            </>
+          )}
+          {recorder.status === "recorded" && (
+            <button type="button" disabled={isSubmitting} onClick={recorder.reset} className="rounded-lg border border-white/15 px-4 py-2 text-sm hover:bg-white/10 disabled:opacity-40">
+              重新录音
+            </button>
+          )}
+          {recorder.recording && !isCheckedIn && (
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => onCheckIn(exercise.id, recorder.recording!)}
+              className="rounded-lg bg-amber-200 px-4 py-2 text-sm font-medium text-[#1A3020] hover:bg-amber-100 disabled:opacity-40"
+            >
+              {isSubmitting ? "上传并评分中..." : "重试上传与评分"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {visibleScore !== null && visibleScore !== undefined && (
+        <div className="mt-4 rounded-xl border border-emerald-300/20 bg-emerald-400/5 p-4">
+          <div className="mb-3 flex items-end justify-between">
+            <span className="text-sm text-emerald-100/70">综合评分</span>
+            <strong className="text-3xl text-emerald-100">{visibleScore}</strong>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-center text-xs text-white/60">
+            <span>发音 {pronunciationScore ?? "—"}</span>
+            <span>流利 {fluencyScore ?? "—"}</span>
+            <span>完整 {completenessScore ?? "—"}</span>
+          </div>
+          {feedback && <p className="mt-3 border-t border-white/10 pt-3 text-sm leading-6 text-white/70">{feedback}</p>}
+        </div>
+      )}
     </article>
   );
+}
+
+function parseApiResponse<T>(payload: unknown): ApiResponse<T> {
+  if (!payload || typeof payload !== "object") {
+    return { code: "INVALID_RESPONSE", data: null, message: "服务器响应格式无效" };
+  }
+  const candidate = payload as Partial<ApiResponse<T>>;
+  if (typeof candidate.code !== "string" || typeof candidate.message !== "string") {
+    return { code: "INVALID_RESPONSE", data: null, message: "服务器响应格式无效" };
+  }
+  return candidate as ApiResponse<T>;
 }
 
 export default function HomePage() {
@@ -124,6 +273,8 @@ export default function HomePage() {
   const [exercises, setExercises] = useState<CompleteExercise[]>([]);
   const [loading, setLoading] = useState(false);
   const [submittingId, setSubmittingId] = useState<number | null>(null);
+  const [activeRecordingId, setActiveRecordingId] = useState<number | null>(null);
+  const [assessments, setAssessments] = useState<Record<number, SpeechAssessment>>({});
   const [checkedInIds, setCheckedInIds] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
@@ -137,6 +288,8 @@ export default function HomePage() {
     setExercises([]);
     setCheckedInIds(new Set());
     setSubmittingId(null);
+    setActiveRecordingId(null);
+    setAssessments({});
     setError(null);
   };
 
@@ -174,7 +327,7 @@ export default function HomePage() {
     }
   };
 
-  const handleCheckIn = async (exerciseId: number) => {
+  const handleCheckIn = async (exerciseId: number, recording: AudioRecording) => {
     if (submittingId !== null || checkedInIds.has(exerciseId)) {
       return;
     }
@@ -183,30 +336,63 @@ export default function HomePage() {
     setError(null);
 
     try {
-      const checkinResponse = await fetch("/api/progress/checkin", {
+      const authorizationResponse = await fetch("/api/uploads/audio", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           exerciseId,
+          contentType: recording.contentType,
+          sizeBytes: recording.blob.size,
         }),
       });
-
-      const checkinData: unknown = await checkinResponse.json();
-      const checkinPayload =
-        checkinData && typeof checkinData === "object"
-          ? (checkinData as Record<string, unknown>)
-          : null;
-
-      if (!checkinResponse.ok || checkinPayload?.code !== "OK") {
-        throw new Error(
-          typeof checkinPayload?.message === "string"
-            ? checkinPayload.message
-            : "打卡记录保存失败",
-        );
+      const authorization = parseApiResponse<AudioUploadAuthorization>(
+        await authorizationResponse.json(),
+      );
+      if (!authorizationResponse.ok || authorization.code !== "OK" || !authorization.data) {
+        throw new Error(authorization.message);
       }
 
+      const uploadResponse = await fetch(authorization.data.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": recording.contentType },
+        body: recording.blob,
+      });
+      if (!uploadResponse.ok) throw new Error("录音上传失败，请检查 R2 CORS 配置");
+
+      const confirmationResponse = await fetch("/api/uploads/audio", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          exerciseId,
+          objectKey: authorization.data.objectKey,
+          durationMs: recording.durationMs,
+        }),
+      });
+      const confirmation = parseApiResponse<{ audioUrl: string; objectKey: string }>(
+        await confirmationResponse.json(),
+      );
+      if (!confirmationResponse.ok || confirmation.code !== "OK") {
+        throw new Error(confirmation.message);
+      }
+
+      const assessmentResponse = await fetch("/api/assessments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          exerciseId,
+          objectKey: authorization.data.objectKey,
+          durationMs: recording.durationMs,
+        }),
+      });
+      const assessment = parseApiResponse<SpeechAssessment>(
+        await assessmentResponse.json(),
+      );
+      if (!assessmentResponse.ok || assessment.code !== "OK" || !assessment.data) {
+        throw new Error(assessment.message);
+      }
+
+      setAssessments((previous) => ({ ...previous, [exerciseId]: assessment.data }));
       setCheckedInIds((prev) => new Set(prev).add(exerciseId));
-      window.alert("打卡成功！");
     } catch (err) {
       setError(err instanceof Error ? err.message : "打卡提交失败，请稍后重试");
     } finally {
@@ -327,6 +513,13 @@ export default function HomePage() {
                   language={language}
                   isSubmitting={submittingId === exercise.id}
                   isCheckedIn={checkedInIds.has(exercise.id)}
+                  isOtherRecording={
+                    activeRecordingId !== null && activeRecordingId !== exercise.id
+                  }
+                  assessment={assessments[exercise.id]}
+                  onRecordingChange={(exerciseId, active) =>
+                    setActiveRecordingId(active ? exerciseId : null)
+                  }
                   onCheckIn={handleCheckIn}
                 />
               ))}

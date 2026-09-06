@@ -11,6 +11,13 @@ export type { ExerciseRow };
 export interface ExerciseProgressInfo {
   status: ProgressStatus;
   completedAt: string | null;
+  audioUrl: string | null;
+  score: number | null;
+  pronunciationScore: number | null;
+  fluencyScore: number | null;
+  completenessScore: number | null;
+  transcript: string | null;
+  feedback: string | null;
 }
 
 /**
@@ -41,7 +48,18 @@ export interface GenerateExercisesData {
 
 export type GenerateExercisesResponse = ApiResponse<GenerateExercisesData>;
 
-type ProgressInput = Pick<UserProgress, "status" | "completedAt">;
+type ProgressInput = Pick<
+  UserProgress,
+  | "status"
+  | "completedAt"
+  | "audioUrl"
+  | "score"
+  | "pronunciationScore"
+  | "fluencyScore"
+  | "completenessScore"
+  | "transcript"
+  | "feedback"
+>;
 
 function toIsoString(value: Date | string | null | undefined): string | null {
   if (value == null) {
@@ -59,6 +77,13 @@ export function toExerciseProgressInfo(
   return {
     status: progress.status,
     completedAt: toIsoString(progress.completedAt),
+    audioUrl: progress.audioUrl,
+    score: progress.score,
+    pronunciationScore: progress.pronunciationScore,
+    fluencyScore: progress.fluencyScore,
+    completenessScore: progress.completenessScore,
+    transcript: progress.transcript,
+    feedback: progress.feedback,
   };
 }
 

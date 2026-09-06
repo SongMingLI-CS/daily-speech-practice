@@ -142,7 +142,17 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
       completedExerciseIds: [] as number[],
       progressByExerciseId: new Map<
         number,
-        { status: "completed"; completedAt: Date | null }
+        {
+          status: "pending" | "completed";
+          completedAt: Date | null;
+          audioUrl: string | null;
+          score: number | null;
+          pronunciationScore: number | null;
+          fluencyScore: number | null;
+          completenessScore: number | null;
+          transcript: string | null;
+          feedback: string | null;
+        }
       >(),
     };
   }
@@ -152,22 +162,30 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
       exerciseId: userProgress.exerciseId,
       status: userProgress.status,
       completedAt: userProgress.completedAt,
+      audioUrl: userProgress.audioUrl,
+      score: userProgress.score,
+      pronunciationScore: userProgress.pronunciationScore,
+      fluencyScore: userProgress.fluencyScore,
+      completenessScore: userProgress.completenessScore,
+      transcript: userProgress.transcript,
+      feedback: userProgress.feedback,
     })
     .from(userProgress)
     .where(
       and(
         eq(userProgress.userId, userId),
-        eq(userProgress.status, "completed"),
         inArray(userProgress.exerciseId, exerciseIds),
       ),
     );
 
   return {
-    completedExerciseIds: buildCompletedExerciseIds(records),
+    completedExerciseIds: buildCompletedExerciseIds(
+      records.filter((record) => record.status === "completed"),
+    ),
     progressByExerciseId: new Map(
       records.map((record) => [
         record.exerciseId,
-        { status: "completed" as const, completedAt: record.completedAt },
+        record,
       ]),
     ),
   };

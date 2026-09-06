@@ -15,6 +15,13 @@
       "when": 1788596812841,
       "tag": "0001_sloppy_tomorrow_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788597222876,
+      "tag": "0002_regular_luke_cage",
+      "breakpoints": true
     }
   ]
 }

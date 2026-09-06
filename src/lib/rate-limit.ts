@@ -8,6 +8,9 @@ export type RateLimitPolicy =
   | "login"
   | "register"
   | "generate"
+  | "upload"
+  | "assessment"
+  | "audio"
   | "checkin"
   | "settings";
 
@@ -30,6 +33,9 @@ const POLICY_CONFIG: Record<
   login: { requests: 10, windowMs: 15 * 60_000, duration: "15 m" },
   register: { requests: 5, windowMs: 60 * 60_000, duration: "1 h" },
   generate: { requests: 10, windowMs: 60 * 60_000, duration: "1 h" },
+  upload: { requests: 20, windowMs: 60 * 60_000, duration: "1 h" },
+  assessment: { requests: 10, windowMs: 60 * 60_000, duration: "1 h" },
+  audio: { requests: 120, windowMs: 60 * 60_000, duration: "1 h" },
   checkin: { requests: 60, windowMs: 60_000, duration: "1 m" },
   settings: { requests: 30, windowMs: 60_000, duration: "1 m" },
 };

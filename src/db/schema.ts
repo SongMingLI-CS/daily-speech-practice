@@ -117,7 +117,15 @@ export const userProgress = pgTable(
       .default("pending")
       .notNull(),
     audioUrl: text("audio_url"),
+    audioKey: text("audio_key"),
+    audioDurationMs: integer("audio_duration_ms"),
+    transcript: text("transcript"),
     score: integer("score"),
+    pronunciationScore: integer("pronunciation_score"),
+    fluencyScore: integer("fluency_score"),
+    completenessScore: integer("completeness_score"),
+    feedback: text("feedback"),
+    assessedAt: timestamp("assessed_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (table) => [
