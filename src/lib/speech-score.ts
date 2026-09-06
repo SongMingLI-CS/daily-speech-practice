@@ -8,7 +8,7 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function tokenize(text: string, language: "zh" | "en"): string[] {
+export function tokenize(text: string, language: "zh" | "en"): string[] {
   const normalized = text.normalize("NFKC").toLowerCase();
   if (language === "zh") {
     return Array.from(normalized).filter((character) => /[\p{Script=Han}a-z0-9]/u.test(character));

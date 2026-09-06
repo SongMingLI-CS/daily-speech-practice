@@ -1,12 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 
 import { useAudioRecorder, type AudioRecording } from "@/hooks/use-audio-recorder";
+import { diffSentences } from "@/lib/speech-diff";
+import { aggregateScoresByDate } from "@/lib/trend";
 import type { ApiResponse } from "@/lib/api-response";
-import type { AudioUploadAuthorization, SpeechAssessment } from "@/types/assessment";
+import type {
+  AssessmentStatusPayload,
+  AudioUploadAuthorization,
+  SpeechAssessment,
+} from "@/types/assessment";
 import {
   type CompleteExercise,
   type ExerciseCount,
@@ -24,6 +30,13 @@ const COUNT_OPTIONS: { value: ExerciseCount; label: string }[] = [
   { value: 3, label: "3 篇" },
   { value: 5, label: "5 篇" },
 ];
+
+/** /api/settings 返回的用户偏好（timeZone 仅原样回传，暂不提供修改入口） */
+interface UserSettingsData {
+  defaultLanguage: ExerciseLanguage;
+  dailyCount: ExerciseCount;
+  timeZone: string;
+}
 
 function LoadingSpinner() {
   return (
@@ -54,20 +67,186 @@ function EmptyState({ language }: { language: ExerciseLanguage }) {
   );
 }
 
+interface AssessmentFailure {
+  message: string;
+  exhausted: boolean;
+}
+
 interface ExerciseCardProps {
   exercise: CompleteExercise;
   language: ExerciseLanguage;
   isSubmitting: boolean;
   isCheckedIn: boolean;
   isOtherRecording: boolean;
+  isScoring: boolean;
+  failure: AssessmentFailure | null;
   assessment?: SpeechAssessment;
   onRecordingChange: (exerciseId: number, active: boolean) => void;
   onCheckIn: (id: number, recording: AudioRecording) => Promise<void>;
+  onRetry: (exerciseId: number) => void;
+  onRehearse: (exerciseId: number) => void;
 }
 
 function formatDuration(durationMs: number): string {
   const totalSeconds = Math.floor(durationMs / 1_000);
   return `${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
+
+function SentenceDrill({
+  content,
+  transcript,
+  language,
+  onRehearse,
+}: {
+  content: string;
+  transcript: string;
+  language: ExerciseLanguage;
+  onRehearse: () => void;
+}) {
+  const [onlyMissed, setOnlyMissed] = useState(false);
+  const sentences = useMemo(
+    () => diffSentences(content, transcript, language),
+    [content, transcript, language],
+  );
+
+  if (sentences.length === 0) return null;
+
+  const passedCount = sentences.filter((sentence) => sentence.passed).length;
+  const missedCount = sentences.length - passedCount;
+  const visible = onlyMissed
+    ? sentences.filter((sentence) => !sentence.passed)
+    : sentences;
+
+  return (
+    <div className="mt-4 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-medium text-amber-100/85">逐句精练 · 差异对照</h3>
+          <p className="mt-0.5 text-xs text-white/45">
+            已达标 {passedCount}/{sentences.length} 句 · 黄色高亮为遗漏内容
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOnlyMissed((value) => !value)}
+          className="shrink-0 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white/60 transition-colors hover:bg-white/10"
+        >
+          {onlyMissed ? "显示全部" : `只看待重练（${missedCount}）`}
+        </button>
+      </div>
+
+      <ol className="mt-3 space-y-2">
+        {visible.map((sentence, index) => (
+          <li key={index} className="flex gap-3 rounded-lg bg-black/20 p-3">
+            <span
+              className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+                sentence.passed
+                  ? "bg-emerald-400/20 text-emerald-200"
+                  : "bg-amber-300/25 text-amber-200"
+              }`}
+            >
+              {sentence.passed ? "✓" : "!"}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm leading-6 text-white/85">
+                {sentence.segments.map((segment, segmentIndex) =>
+                  segment.matched ? (
+                    <span key={segmentIndex}>{segment.text}</span>
+                  ) : (
+                    <mark
+                      key={segmentIndex}
+                      className="rounded bg-amber-300/25 px-0.5 text-amber-100"
+                    >
+                      {segment.text}
+                    </mark>
+                  ),
+                )}
+              </p>
+              <p className="mt-1 text-xs text-white/40">
+                覆盖率 {sentence.coverage}% · 匹配 {sentence.matched}/{sentence.total}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/10 pt-3">
+        <p className="text-xs text-white/40">对照待重练句子重新录音，可刷新评分</p>
+        <button
+          type="button"
+          onClick={onRehearse}
+          className="shrink-0 rounded-lg bg-amber-200/90 px-4 py-1.5 text-xs font-medium text-[#1A3020] transition-colors hover:bg-amber-100"
+        >
+          重练本题
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TrendChart({ points }: { points: Array<{ date: string; score: number }> }) {
+  if (points.length < 2) return null;
+
+  const width = 320;
+  const height = 110;
+  const padding = 16;
+  const xFor = (index: number) =>
+    padding + (index * (width - padding * 2)) / (points.length - 1);
+  const yFor = (score: number) =>
+    height - padding - (score / 100) * (height - padding * 2);
+  const line = points
+    .map(
+      (point, index) =>
+        `${index === 0 ? "M" : "L"}${xFor(index).toFixed(1)},${yFor(point.score).toFixed(1)}`,
+    )
+    .join(" ");
+  const latest = points[points.length - 1].score;
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/20 p-4 backdrop-blur-md">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs tracking-widest text-white/50">近期评分趋势</span>
+        <span className="text-xs text-amber-200/80">最新 {latest}</span>
+      </div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full"
+        role="img"
+        aria-label="近期评分趋势图"
+      >
+        <line
+          x1={padding}
+          y1={height - padding}
+          x2={width - padding}
+          y2={height - padding}
+          stroke="rgba(255,255,255,0.15)"
+          strokeWidth="1"
+        />
+        <polyline
+          points={line}
+          fill="none"
+          stroke="rgba(253, 230, 138, 0.85)"
+          strokeWidth="2"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        {points.map((point, index) => (
+          <circle key={index} cx={xFor(index)} cy={yFor(point.score)} r="2.6" fill="#fde68a" />
+        ))}
+        <text x={padding} y={height - 4} className="fill-white/40 text-[9px]">
+          {points[0].date}
+        </text>
+        <text
+          x={width - padding}
+          y={height - 4}
+          textAnchor="end"
+          className="fill-white/40 text-[9px]"
+        >
+          {points[points.length - 1].date}
+        </text>
+      </svg>
+    </div>
+  );
 }
 
 function ExerciseCard({
@@ -76,9 +255,13 @@ function ExerciseCard({
   isSubmitting,
   isCheckedIn,
   isOtherRecording,
+  isScoring,
+  failure,
   assessment,
   onRecordingChange,
   onCheckIn,
+  onRetry,
+  onRehearse,
 }: ExerciseCardProps) {
   const recorder = useAudioRecorder();
   const submittedRecordingUrlRef = useRef<string | null>(null);
@@ -89,8 +272,9 @@ function ExerciseCard({
   const completenessScore =
     assessment?.completenessScore ?? exercise.progress?.completenessScore;
   const feedback = assessment?.feedback ?? exercise.progress?.feedback;
+  const transcript = assessment?.transcript ?? exercise.progress?.transcript ?? "";
   const audioUrl = assessment?.audioUrl ?? exercise.progress?.audioUrl ?? recorder.recording?.url;
-  const canSubmit = Boolean(recorder.recording) && !isSubmitting;
+  const canSubmit = Boolean(recorder.recording) && !isSubmitting && !isScoring;
 
   useEffect(() => {
     if (recorder.status === "recorded" || recorder.status === "error") {
@@ -230,11 +414,27 @@ function ExerciseCard({
               onClick={() => onCheckIn(exercise.id, recorder.recording!)}
               className="rounded-lg bg-amber-200 px-4 py-2 text-sm font-medium text-[#1A3020] hover:bg-amber-100 disabled:opacity-40"
             >
-              {isSubmitting ? "上传并评分中..." : "重试上传与评分"}
+              {isSubmitting ? "上传并评分中..." : isScoring ? "评分中..." : "重试上传与评分"}
             </button>
           )}
         </div>
       </div>
+
+      {failure && (
+        <div className="mt-4 rounded-xl border border-red-300/20 bg-red-400/5 p-4">
+          <p className="text-sm leading-6 text-red-100">{failure.message}</p>
+          {!failure.exhausted && (
+            <button
+              type="button"
+              onClick={() => onRetry(exercise.id)}
+              disabled={isSubmitting || isScoring}
+              className="mt-3 rounded-lg border border-red-300/40 px-4 py-2 text-sm text-red-100 hover:bg-red-400/10 disabled:opacity-40"
+            >
+              重试评分
+            </button>
+          )}
+        </div>
+      )}
 
       {visibleScore !== null && visibleScore !== undefined && (
         <div className="mt-4 rounded-xl border border-emerald-300/20 bg-emerald-400/5 p-4">
@@ -249,6 +449,18 @@ function ExerciseCard({
           </div>
           {feedback && <p className="mt-3 border-t border-white/10 pt-3 text-sm leading-6 text-white/70">{feedback}</p>}
         </div>
+      )}
+
+      {transcript && (
+        <SentenceDrill
+          content={exercise.content}
+          transcript={transcript}
+          language={language}
+          onRehearse={() => {
+            onRehearse(exercise.id);
+            recorder.reset();
+          }}
+        />
       )}
     </article>
   );
@@ -276,21 +488,271 @@ export default function HomePage() {
   const [activeRecordingId, setActiveRecordingId] = useState<number | null>(null);
   const [assessments, setAssessments] = useState<Record<number, SpeechAssessment>>({});
   const [checkedInIds, setCheckedInIds] = useState<Set<number>>(new Set());
+  const [scoringIds, setScoringIds] = useState<Set<number>>(new Set());
+  const [scoreFailures, setScoreFailures] = useState<Record<number, AssessmentFailure>>({});
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<Array<{ date: string; score: number }>>([]);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const activePollIdsRef = useRef<Set<number>>(new Set());
+  /** 用户是否已手动改过语言/篇数（用于避免慢速的设置请求覆盖用户刚做的选择） */
+  const userAdjustedSettingsRef = useRef(false);
+  const settingsRef = useRef<UserSettingsData | null>(null);
+
+  const persistSettings = useCallback(
+    async (defaultLanguage: ExerciseLanguage, dailyCount: ExerciseCount) => {
+      const timeZone = settingsRef.current?.timeZone ?? "Asia/Shanghai";
+      settingsRef.current = { defaultLanguage, dailyCount, timeZone };
+      setSettingsNotice(null);
+      try {
+        const response = await fetch("/api/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ defaultLanguage, dailyCount, timeZone }),
+        });
+        const payload = parseApiResponse<unknown>(await response.json());
+        if (!response.ok || payload.code !== "OK") {
+          throw new Error(payload.message || "保存失败");
+        }
+      } catch (err) {
+        console.warn("[settings] 保存失败", err);
+        setSettingsNotice(
+          err instanceof Error ? `设置保存失败：${err.message}` : "设置保存失败，请稍后重试",
+        );
+      }
+    },
+    [],
+  );
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const response = await fetch("/api/settings");
+      const payload = parseApiResponse<UserSettingsData>(await response.json());
+      if (response.ok && payload.code === "OK" && payload.data) {
+        const { defaultLanguage, dailyCount, timeZone } = payload.data;
+        settingsRef.current = { defaultLanguage, dailyCount, timeZone };
+        if (!userAdjustedSettingsRef.current) {
+          setLanguage(defaultLanguage);
+          setCount(dailyCount);
+        }
+      }
+    } catch {
+      // 偏好读取失败不影响主流程，沿用默认值
+    }
+  }, []);
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      const response = await fetch("/api/progress/history");
+      const payload = parseApiResponse<{
+        points: Array<{ date: string; score: number }>;
+      }>(await response.json());
+      if (response.ok && payload.code === "OK" && payload.data) {
+        setHistory(aggregateScoresByDate(payload.data.points));
+      }
+    } catch {
+      // 趋势加载失败不影响主流程
+    }
+  }, []);
 
   useEffect(() => {
     if (status === "unauthenticated") router.replace("/login");
   }, [router, status]);
 
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    void refreshHistory();
+    void loadSettings();
+  }, [loadSettings, refreshHistory, status]);
+
+  useEffect(() => {
+    const activePollIds = activePollIdsRef.current;
+    return () => {
+      activePollIds.clear();
+    };
+  }, []);
+
+  const applyAssessmentStatus = (
+    exerciseId: number,
+    payload: AssessmentStatusPayload,
+  ) => {
+    if (payload.status === "completed" && payload.assessment) {
+      setAssessments((prev) => ({ ...prev, [exerciseId]: payload.assessment! }));
+      setCheckedInIds((prev) => new Set(prev).add(exerciseId));
+      setScoringIds((prev) => {
+        const next = new Set(prev);
+        next.delete(exerciseId);
+        return next;
+      });
+      setScoreFailures((prev) => {
+        const next = { ...prev };
+        delete next[exerciseId];
+        return next;
+      });
+      void refreshHistory();
+      return;
+    }
+
+    const exhausted =
+      payload.status !== "processing" && payload.attempts >= payload.maxAttempts;
+    if (payload.status === "failed" || exhausted) {
+      setScoringIds((prev) => {
+        const next = new Set(prev);
+        next.delete(exerciseId);
+        return next;
+      });
+      setScoreFailures((prev) => ({
+        ...prev,
+        [exerciseId]: {
+          message:
+            payload.error ??
+            (exhausted ? "评分次数已达上限，请重新录音后再试" : "语音评分失败，请重试"),
+          exhausted,
+        },
+      }));
+    }
+  };
+
+  const pollAssessment = async (exerciseId: number) => {
+    let delay = 2_000;
+    const deadline = Date.now() + 4 * 60_000;
+
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+
+      if (!activePollIdsRef.current.has(exerciseId)) return;
+
+      try {
+        const response = await fetch(`/api/assessments?exerciseId=${exerciseId}`);
+        const payload = parseApiResponse<AssessmentStatusPayload>(
+          await response.json(),
+        );
+        if (response.ok && payload.code === "OK" && payload.data) {
+          const status = payload.data.status;
+          if (status === "completed" || status === "failed") {
+            activePollIdsRef.current.delete(exerciseId);
+            applyAssessmentStatus(exerciseId, payload.data);
+            return;
+          }
+        }
+      } catch {
+        // 网络抖动，继续轮询
+      }
+
+      if (Date.now() > deadline) {
+        activePollIdsRef.current.delete(exerciseId);
+        setScoringIds((prev) => {
+          const next = new Set(prev);
+          next.delete(exerciseId);
+          return next;
+        });
+        setScoreFailures((prev) => ({
+          ...prev,
+          [exerciseId]: { message: "评分超时，请点击重试", exhausted: false },
+        }));
+        return;
+      }
+
+      delay = Math.min(Math.round(delay * 1.5), 15_000);
+    }
+  };
+
+  const startAssessment = async (exerciseId: number) => {
+    setScoringIds((prev) => new Set(prev).add(exerciseId));
+    setScoreFailures((prev) => {
+      const next = { ...prev };
+      delete next[exerciseId];
+      return next;
+    });
+
+    try {
+      const response = await fetch("/api/assessments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ exerciseId }),
+      });
+      const payload = parseApiResponse<AssessmentStatusPayload>(
+        await response.json(),
+      );
+      if (!response.ok || payload.code !== "OK" || !payload.data) {
+        throw new Error(payload.message);
+      }
+
+      applyAssessmentStatus(exerciseId, payload.data);
+
+      if (payload.data.status === "processing") {
+        activePollIdsRef.current.add(exerciseId);
+        void pollAssessment(exerciseId);
+      }
+    } catch (err) {
+      setScoringIds((prev) => {
+        const next = new Set(prev);
+        next.delete(exerciseId);
+        return next;
+      });
+      setScoreFailures((prev) => ({
+        ...prev,
+        [exerciseId]: {
+          message: err instanceof Error ? err.message : "启动评分失败，请重试",
+          exhausted: false,
+        },
+      }));
+    }
+  };
+
+  const resumeFromProgress = (list: CompleteExercise[]) => {
+    const scoring = new Set<number>();
+    const failures: Record<number, AssessmentFailure> = {};
+    const pendingIds: number[] = [];
+
+    for (const exercise of list) {
+      const progress = exercise.progress;
+      if (!progress) continue;
+      if (progress.status === "processing") {
+        scoring.add(exercise.id);
+      } else if (progress.status === "pending") {
+        pendingIds.push(exercise.id);
+      } else if (progress.status === "failed") {
+        failures[exercise.id] = {
+          message: progress.lastError ?? "语音评分失败，请重试",
+          exhausted: false,
+        };
+      }
+    }
+
+    setScoringIds(scoring);
+    setScoreFailures(failures);
+    setAssessments({});
+
+    for (const id of scoring) {
+      activePollIdsRef.current.add(id);
+      void pollAssessment(id);
+    }
+    for (const id of pendingIds) {
+      void startAssessment(id);
+    }
+  };
+
   const handleLanguageChange = (nextLanguage: ExerciseLanguage) => {
     if (nextLanguage === language) return;
+    userAdjustedSettingsRef.current = true;
     setLanguage(nextLanguage);
     setExercises([]);
     setCheckedInIds(new Set());
     setSubmittingId(null);
     setActiveRecordingId(null);
     setAssessments({});
+    setScoringIds(new Set());
+    setScoreFailures({});
+    activePollIdsRef.current.clear();
     setError(null);
+    void persistSettings(nextLanguage, count);
+  };
+
+  const handleCountChange = (nextCount: ExerciseCount) => {
+    if (nextCount === count) return;
+    userAdjustedSettingsRef.current = true;
+    setCount(nextCount);
+    void persistSettings(language, nextCount);
   };
 
   const handleGenerate = async () => {
@@ -320,6 +782,7 @@ export default function HomePage() {
       setExercises(data.data.exercises);
       setCheckedInIds(new Set(data.data.completedExerciseIds));
       setSubmittingId(null);
+      resumeFromProgress(data.data.exercises);
     } catch (err) {
       setError(err instanceof Error ? err.message : "未知错误");
     } finally {
@@ -328,7 +791,7 @@ export default function HomePage() {
   };
 
   const handleCheckIn = async (exerciseId: number, recording: AudioRecording) => {
-    if (submittingId !== null || checkedInIds.has(exerciseId)) {
+    if (submittingId !== null || checkedInIds.has(exerciseId) || scoringIds.has(exerciseId)) {
       return;
     }
 
@@ -375,29 +838,30 @@ export default function HomePage() {
         throw new Error(confirmation.message);
       }
 
-      const assessmentResponse = await fetch("/api/assessments", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          exerciseId,
-          objectKey: authorization.data.objectKey,
-          durationMs: recording.durationMs,
-        }),
-      });
-      const assessment = parseApiResponse<SpeechAssessment>(
-        await assessmentResponse.json(),
-      );
-      if (!assessmentResponse.ok || assessment.code !== "OK" || !assessment.data) {
-        throw new Error(assessment.message);
-      }
-
-      setAssessments((previous) => ({ ...previous, [exerciseId]: assessment.data }));
-      setCheckedInIds((prev) => new Set(prev).add(exerciseId));
+      await startAssessment(exerciseId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "打卡提交失败，请稍后重试");
     } finally {
       setSubmittingId(null);
     }
+  };
+
+  const handleRehearse = (exerciseId: number) => {
+    setCheckedInIds((prev) => {
+      const next = new Set(prev);
+      next.delete(exerciseId);
+      return next;
+    });
+    setAssessments((prev) => {
+      const next = { ...prev };
+      delete next[exerciseId];
+      return next;
+    });
+    setScoreFailures((prev) => {
+      const next = { ...prev };
+      delete next[exerciseId];
+      return next;
+    });
   };
 
   const pageBg =
@@ -465,7 +929,7 @@ export default function HomePage() {
                   <span className="shrink-0">每日篇数</span>
                   <select
                     value={count}
-                    onChange={(e) => setCount(Number(e.target.value) as ExerciseCount)}
+                    onChange={(e) => handleCountChange(Number(e.target.value) as ExerciseCount)}
                     className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-white/90 outline-none transition-colors focus:border-amber-200/40"
                   >
                     {COUNT_OPTIONS.map((option) => (
@@ -497,9 +961,16 @@ export default function HomePage() {
               {error}
             </div>
           )}
+
+          {settingsNotice && (
+            <div className="rounded-xl border border-amber-300/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-100/80">
+              {settingsNotice}
+            </div>
+          )}
         </header>
 
-        <main>
+        <main className="space-y-6">
+          <TrendChart points={history} />
           {loading ? (
             <LoadingSpinner />
           ) : exercises.length === 0 ? (
@@ -516,11 +987,15 @@ export default function HomePage() {
                   isOtherRecording={
                     activeRecordingId !== null && activeRecordingId !== exercise.id
                   }
+                  isScoring={scoringIds.has(exercise.id)}
+                  failure={scoreFailures[exercise.id] ?? null}
                   assessment={assessments[exercise.id]}
                   onRecordingChange={(exerciseId, active) =>
                     setActiveRecordingId(active ? exerciseId : null)
                   }
                   onCheckIn={handleCheckIn}
+                  onRetry={(id) => void startAssessment(id)}
+                  onRehearse={handleRehearse}
                 />
               ))}
             </div>
