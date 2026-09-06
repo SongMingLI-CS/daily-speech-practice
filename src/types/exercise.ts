@@ -3,7 +3,7 @@ import type { ApiResponse } from "@/lib/api-response";
 
 export type ExerciseLanguage = "zh" | "en";
 export type ExerciseCount = 1 | 3 | 5;
-export type ProgressStatus = "pending" | "completed";
+export type ProgressStatus = "pending" | "processing" | "completed" | "failed";
 
 export type { ExerciseRow };
 
@@ -18,6 +18,7 @@ export interface ExerciseProgressInfo {
   completenessScore: number | null;
   transcript: string | null;
   feedback: string | null;
+  lastError: string | null;
 }
 
 /**
@@ -48,7 +49,7 @@ export interface GenerateExercisesData {
 
 export type GenerateExercisesResponse = ApiResponse<GenerateExercisesData>;
 
-type ProgressInput = Pick<
+export type ProgressInput = Pick<
   UserProgress,
   | "status"
   | "completedAt"
@@ -59,6 +60,7 @@ type ProgressInput = Pick<
   | "completenessScore"
   | "transcript"
   | "feedback"
+  | "lastError"
 >;
 
 function toIsoString(value: Date | string | null | undefined): string | null {
@@ -84,6 +86,7 @@ export function toExerciseProgressInfo(
     completenessScore: progress.completenessScore,
     transcript: progress.transcript,
     feedback: progress.feedback,
+    lastError: progress.lastError ?? null,
   };
 }
 

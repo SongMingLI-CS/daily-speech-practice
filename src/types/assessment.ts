@@ -1,3 +1,5 @@
+import type { ProgressStatus } from "@/types/exercise";
+
 export interface SpeechAssessment {
   overallScore: number;
   pronunciationScore: number;
@@ -14,4 +16,12 @@ export interface AudioUploadAuthorization {
   uploadUrl: string;
   objectKey: string;
   expiresInSeconds: number;
+}
+
+export interface AssessmentStatusPayload {
+  status: ProgressStatus;
+  assessment: SpeechAssessment | null;
+  error: string | null;
+  attempts: number;
+  maxAttempts: number;
 }

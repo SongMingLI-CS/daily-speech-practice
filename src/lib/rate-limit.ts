@@ -12,7 +12,9 @@ export type RateLimitPolicy =
   | "assessment"
   | "audio"
   | "checkin"
-  | "settings";
+  | "settings"
+  | "assessmentStatus"
+  | "history";
 
 export interface RateLimitResult {
   success: boolean;
@@ -34,10 +36,12 @@ const POLICY_CONFIG: Record<
   register: { requests: 5, windowMs: 60 * 60_000, duration: "1 h" },
   generate: { requests: 10, windowMs: 60 * 60_000, duration: "1 h" },
   upload: { requests: 20, windowMs: 60 * 60_000, duration: "1 h" },
-  assessment: { requests: 10, windowMs: 60 * 60_000, duration: "1 h" },
+  assessment: { requests: 30, windowMs: 60 * 60_000, duration: "1 h" },
+  assessmentStatus: { requests: 600, windowMs: 60 * 60_000, duration: "1 h" },
   audio: { requests: 120, windowMs: 60 * 60_000, duration: "1 h" },
   checkin: { requests: 60, windowMs: 60_000, duration: "1 m" },
   settings: { requests: 30, windowMs: 60_000, duration: "1 m" },
+  history: { requests: 60, windowMs: 60 * 60_000, duration: "1 h" },
 };
 
 const distributedLimiters = new Map<RateLimitPolicy, Ratelimit>();

@@ -12,12 +12,14 @@ import {
 } from "@/db/schema";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
+import { getTodayDateString } from "@/lib/date";
 import {
   buildCompletedExerciseIds,
   mergeExercisesWithProgress,
   type ExerciseCount,
   type ExerciseLanguage,
   type GenerateExercisesData,
+  type ProgressInput,
 } from "@/types/exercise";
 
 const VALID_LANGUAGES = ["zh", "en"] as const;
@@ -39,15 +41,6 @@ const SYSTEM_PROMPT = `你是专业的口才训练教练和语言专家。请生
 中文内容需要有感染力和画面感；英文内容应现代、自然、有节奏感。
 你必须且只能返回标准 JSON 数组，不要包含 Markdown 标记。每项格式为：
 {"title":"标题","category":"分类名","content":"正文，可使用 \\n 换行"}`;
-
-function getTodayDateString(timeZone = "Asia/Shanghai"): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-}
 
 function parseRequestBody(body: unknown): GenerateRequestBody {
   if (!body || typeof body !== "object") throw new Error("请求体格式无效");
@@ -140,20 +133,7 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
   if (exerciseIds.length === 0) {
     return {
       completedExerciseIds: [] as number[],
-      progressByExerciseId: new Map<
-        number,
-        {
-          status: "pending" | "completed";
-          completedAt: Date | null;
-          audioUrl: string | null;
-          score: number | null;
-          pronunciationScore: number | null;
-          fluencyScore: number | null;
-          completenessScore: number | null;
-          transcript: string | null;
-          feedback: string | null;
-        }
-      >(),
+      progressByExerciseId: new Map<number, ProgressInput>(),
     };
   }
 
@@ -169,6 +149,7 @@ async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
       completenessScore: userProgress.completenessScore,
       transcript: userProgress.transcript,
       feedback: userProgress.feedback,
+      lastError: userProgress.lastError,
     })
     .from(userProgress)
     .where(

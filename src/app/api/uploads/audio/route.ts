@@ -8,7 +8,6 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
-import { z } from "zod";
 
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
@@ -16,32 +15,14 @@ import { exercises, userProgress } from "@/db/schema";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
 import { getR2BucketName, getR2Client } from "@/lib/r2";
+import {
+  extensionFor,
+  MAX_AUDIO_BYTES,
+  UPLOAD_EXPIRES_IN_SECONDS,
+  uploadCompleteSchema,
+  uploadRequestSchema,
+} from "@/lib/upload-validation";
 import type { AudioUploadAuthorization } from "@/types/assessment";
-
-const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
-const UPLOAD_EXPIRES_IN_SECONDS = 300;
-const ALLOWED_CONTENT_TYPES = ["audio/webm", "audio/ogg", "audio/mp4"] as const;
-
-const uploadRequestSchema = z.object({
-  exerciseId: z.number().int().positive(),
-  contentType: z.string().refine(
-    (value) => ALLOWED_CONTENT_TYPES.some((type) => value.startsWith(type)),
-    "不支持的录音格式",
-  ),
-  sizeBytes: z.number().int().positive().max(MAX_AUDIO_BYTES, "录音文件不能超过 20MB"),
-});
-
-const uploadCompleteSchema = z.object({
-  exerciseId: z.number().int().positive(),
-  objectKey: z.string().min(1).max(500),
-  durationMs: z.number().int().min(1_000).max(180_000),
-});
-
-function extensionFor(contentType: string): string {
-  if (contentType.startsWith("audio/ogg")) return "ogg";
-  if (contentType.startsWith("audio/mp4")) return "m4a";
-  return "webm";
-}
 
 export async function POST(request: NextRequest) {
   const currentUser = await getCurrentUser();
@@ -129,6 +110,17 @@ export async function PATCH(request: NextRequest) {
     .limit(1);
   if (!exercise) return apiError("EXERCISE_NOT_FOUND", "练习不存在", 404);
 
+  const [existing] = await db
+    .select({ audioKey: userProgress.audioKey })
+    .from(userProgress)
+    .where(
+      and(
+        eq(userProgress.userId, currentUser.id),
+        eq(userProgress.exerciseId, exerciseId),
+      ),
+    )
+    .limit(1);
+
   try {
     const metadata = await getR2Client().send(
       new HeadObjectCommand({ Bucket: getR2BucketName(), Key: objectKey }),
@@ -166,8 +158,28 @@ export async function PATCH(request: NextRequest) {
           feedback: null,
           assessedAt: null,
           completedAt: null,
+          // 全新录音 = 新的评分机会：重置失败计数与处理租约
+          attempts: 0,
+          lastError: null,
+          startedAt: null,
         },
       });
+
+    if (existing?.audioKey && existing.audioKey !== objectKey) {
+      try {
+        await getR2Client().send(
+          new DeleteObjectCommand({
+            Bucket: getR2BucketName(),
+            Key: existing.audioKey,
+          }),
+        );
+      } catch (cleanupError) {
+        console.error(
+          "[PATCH /api/uploads/audio] failed to clean up old recording",
+          cleanupError,
+        );
+      }
+    }
 
     return apiSuccess({ audioUrl, objectKey }, "录音上传已确认");
   } catch (error) {
