@@ -113,7 +113,9 @@ export const userProgress = pgTable(
     exerciseId: integer("exercise_id")
       .notNull()
       .references(() => exercises.id, { onDelete: "cascade" }),
-    status: text("status", { enum: ["pending", "completed"] })
+    status: text("status", {
+      enum: ["pending", "processing", "completed", "failed"],
+    })
       .default("pending")
       .notNull(),
     audioUrl: text("audio_url"),
@@ -127,6 +129,9 @@ export const userProgress = pgTable(
     feedback: text("feedback"),
     assessedAt: timestamp("assessed_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    attempts: integer("attempts").default(0).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    lastError: text("last_error"),
   },
   (table) => [
     unique("user_progress_user_id_exercise_id_unique").on(
