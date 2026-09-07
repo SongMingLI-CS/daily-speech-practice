@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Language = "zh" | "en";
 type DailyCount = 1 | 3 | 5;
@@ -83,6 +83,13 @@ export default function SettingsPage() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const currentPasswordRef = useRef<HTMLInputElement>(null);
+  const newPasswordRef = useRef<HTMLInputElement>(null);
+  const deleteEmailRef = useRef<HTMLInputElement>(null);
+  const [nameSaving, setNameSaving] = useState(false);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
     if (status === "unauthenticated") router.replace("/login");
@@ -133,6 +140,100 @@ export default function SettingsPage() {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const readMessage = (payload: unknown, fallback: string): string => {
+    if (!payload || typeof payload !== "object") return fallback;
+    const message = (payload as { message?: unknown }).message;
+    return typeof message === "string" && message ? message : fallback;
+  };
+
+  const handleNameSave = async () => {
+    const name = nameInputRef.current?.value.trim() ?? "";
+    if (!name) {
+      setNotice({ kind: "err", text: "昵称不能为空" });
+      return;
+    }
+    setNameSaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/account", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) throw new Error(readMessage(payload, "保存失败"));
+      setNotice({ kind: "ok", text: readMessage(payload, "昵称已更新") + "（重新登录后全局生效）" });
+    } catch (err) {
+      setNotice({
+        kind: "err",
+        text: err instanceof Error ? err.message : "保存失败，请稍后重试",
+      });
+    } finally {
+      setNameSaving(false);
+    }
+  };
+
+  const handlePasswordSave = async () => {
+    const currentPassword = currentPasswordRef.current?.value ?? "";
+    const newPassword = newPasswordRef.current?.value ?? "";
+    if (newPassword.length < 8) {
+      setNotice({ kind: "err", text: "新密码至少 8 个字符" });
+      return;
+    }
+    setPasswordSaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/account/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) throw new Error(readMessage(payload, "修改失败"));
+      if (currentPasswordRef.current) currentPasswordRef.current.value = "";
+      if (newPasswordRef.current) newPasswordRef.current.value = "";
+      setNotice({ kind: "ok", text: readMessage(payload, "密码已更新") });
+    } catch (err) {
+      setNotice({
+        kind: "err",
+        text: err instanceof Error ? err.message : "修改失败，请稍后重试",
+      });
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    const email = deleteEmailRef.current?.value.trim() ?? "";
+    if (!email) {
+      setNotice({ kind: "err", text: "请输入用于确认的邮箱" });
+      return;
+    }
+    if (email !== session?.user?.email) {
+      setNotice({ kind: "err", text: "确认邮箱与登录邮箱不一致" });
+      return;
+    }
+    if (!window.confirm("确定永久删除账号吗？所有打卡记录与录音将被移除，且无法恢复。")) return;
+    setDeletingAccount(true);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/account", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) throw new Error(readMessage(payload, "删除失败"));
+      await signOut({ callbackUrl: "/login" });
+    } catch (err) {
+      setNotice({
+        kind: "err",
+        text: err instanceof Error ? err.message : "删除失败，请稍后重试",
+      });
+      setDeletingAccount(false);
     }
   };
 
@@ -268,6 +369,103 @@ export default function SettingsPage() {
                 {saving ? "保存中..." : "保存设置"}
               </button>
             </div>
+          </div>
+        </Section>
+
+        <Section title="账号管理" description="修改登录昵称或密码。昵称修改后需重新登录才会全局更新。">
+          <div className="space-y-6">
+            <form
+              className="space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleNameSave();
+              }}
+            >
+              <label className="block text-sm text-white/75">
+                昵称
+                <input
+                  ref={nameInputRef}
+                  defaultValue={session?.user?.name ?? session?.user?.email ?? ""}
+                  maxLength={40}
+                  className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none transition-colors focus:border-amber-200/50"
+                />
+              </label>
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={nameSaving}
+                  className="rounded-xl bg-gradient-to-r from-amber-200/90 to-amber-100/80 px-6 py-2.5 text-sm font-semibold text-[#1A3020] shadow-lg shadow-amber-900/20 transition-all hover:from-amber-100 hover:to-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {nameSaving ? "保存中..." : "保存昵称"}
+                </button>
+              </div>
+            </form>
+
+            <form
+              className="space-y-3 border-t border-white/10 pt-5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handlePasswordSave();
+              }}
+            >
+              <p className="text-xs leading-5 text-white/40">
+                仅对邮箱密码注册的账号可用（第三方登录账号无密码）。
+              </p>
+              <label className="block text-sm text-white/75">
+                当前密码
+                <input
+                  ref={currentPasswordRef}
+                  type="password"
+                  autoComplete="current-password"
+                  className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none transition-colors focus:border-amber-200/50"
+                />
+              </label>
+              <label className="block text-sm text-white/75">
+                新密码
+                <input
+                  ref={newPasswordRef}
+                  type="password"
+                  minLength={8}
+                  maxLength={72}
+                  autoComplete="new-password"
+                  className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none transition-colors focus:border-amber-200/50"
+                />
+              </label>
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={passwordSaving}
+                  className="rounded-xl border border-amber-200/40 px-6 py-2.5 text-sm font-medium text-amber-100 transition-colors hover:bg-amber-200/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {passwordSaving ? "修改中..." : "修改密码"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </Section>
+
+        <Section
+          title="危险操作"
+          description="删除账号将同时移除全部打卡记录与录音文件，此操作不可恢复。"
+        >
+          <label className="block text-sm text-white/75">
+            输入登录邮箱 {session?.user?.email ? `（${session.user.email}）` : ""} 以确认
+            <input
+              ref={deleteEmailRef}
+              type="email"
+              autoComplete="off"
+              className="mt-2 w-full rounded-xl border border-red-300/30 bg-white/5 px-4 py-3 text-white outline-none transition-colors placeholder:text-white/25 focus:border-red-300/50"
+            />
+          </label>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              disabled={deletingAccount}
+              onClick={() => void handleDeleteAccount()}
+              className="rounded-xl border border-red-300/40 px-6 py-2.5 text-sm font-medium text-red-200 transition-colors hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {deletingAccount ? "删除中..." : "永久删除账号"}
+            </button>
           </div>
         </Section>
 
