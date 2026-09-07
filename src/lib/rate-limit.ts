@@ -55,10 +55,21 @@ export class RateLimitConfigurationError extends Error {
   }
 }
 
-function getDistributedLimiter(policy: RateLimitPolicy): Ratelimit | null {
+function hasUsableUpstashCredentials(): boolean {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return null;
+  if (!url || !token) return false;
+  const combined = `${url} ${token}`;
+  // 跳过 .env.example 复制来的占位值，避免把它们当成真实配置去请求
+  if (/replace|your-instance|your-account|example|xxx/i.test(combined)) return false;
+  return /^https?:\/\//.test(url);
+}
+
+function getDistributedLimiter(policy: RateLimitPolicy): Ratelimit | null {
+  if (!hasUsableUpstashCredentials()) return null;
+
+  const url = process.env.UPSTASH_REDIS_REST_URL!;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN!;
 
   const cached = distributedLimiters.get(policy);
   if (cached) return cached;
