@@ -425,12 +425,32 @@ export default function HomePage() {
         throw new Error(authorization.message);
       }
 
-      const uploadResponse = await fetch(authorization.data.uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": recording.contentType },
-        body: recording.blob,
-      });
-      if (!uploadResponse.ok) throw new Error("录音上传失败，请检查 R2 CORS 配置");
+      if (authorization.data.mode === "r2") {
+        const uploadResponse = await fetch(authorization.data.uploadUrl as string, {
+          method: "PUT",
+          headers: { "Content-Type": recording.contentType },
+          body: recording.blob,
+        });
+        if (!uploadResponse.ok) throw new Error("录音上传失败，请检查 R2 CORS 配置");
+      } else {
+        // 本地兜底模式：直接把音频正文 POST 给服务端落盘
+        const uploadResponse = await fetch("/api/uploads/audio/body", {
+          method: "POST",
+          headers: {
+            "Content-Type": recording.contentType,
+            "x-audio-key": authorization.data.objectKey,
+          },
+          body: recording.blob,
+        });
+        if (!uploadResponse.ok) {
+          const payload: unknown = await uploadResponse.json().catch(() => null);
+          const message =
+            payload && typeof payload === "object"
+              ? String((payload as { message?: unknown }).message ?? "")
+              : "";
+          throw new Error(message || "录音上传失败，请重试");
+        }
+      }
 
       const confirmationResponse = await fetch("/api/uploads/audio", {
         method: "PATCH",

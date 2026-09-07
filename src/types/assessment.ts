@@ -13,7 +13,9 @@ export interface SpeechAssessment {
 }
 
 export interface AudioUploadAuthorization {
-  uploadUrl: string;
+  /** r2 = 直传签名 URL；local = 本地兜底（POST /api/uploads/audio/body） */
+  mode: "r2" | "local";
+  uploadUrl: string | null;
   objectKey: string;
   expiresInSeconds: number;
 }

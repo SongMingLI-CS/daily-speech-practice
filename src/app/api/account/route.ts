@@ -5,10 +5,9 @@ import { z } from "zod";
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
 import { userProgress, users } from "@/db/schema";
+import { deleteAudioObject } from "@/lib/audio-store";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
-import { getR2BucketName, getR2Client } from "@/lib/r2";
-import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 const nameSchema = z.object({
   name: z.string().trim().min(1, "昵称不能为空").max(40, "昵称最多 40 个字符"),
@@ -74,12 +73,7 @@ export async function DELETE(request: NextRequest) {
     for (const row of rows) {
       if (!row.audioKey) continue;
       try {
-        await getR2Client().send(
-          new DeleteObjectCommand({
-            Bucket: getR2BucketName(),
-            Key: row.audioKey,
-          }),
-        );
+        await deleteAudioObject(row.audioKey);
       } catch (cleanupError) {
         console.warn("[DELETE /api/account] 音频清理失败", cleanupError);
       }

@@ -1,14 +1,15 @@
 import { GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { and, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
 import { userProgress } from "@/db/schema";
+import { isR2Configured, loadAudioObject } from "@/lib/audio-store";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError } from "@/lib/api-response";
 import { getR2BucketName, getR2Client } from "@/lib/r2";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 interface RouteContext {
   params: Promise<{ exerciseId: string }>;
@@ -43,16 +44,28 @@ export async function GET(request: NextRequest, context: RouteContext) {
   if (!progress?.audioKey) return apiError("AUDIO_NOT_FOUND", "录音不存在", 404);
 
   try {
-    const downloadUrl = await getSignedUrl(
-      getR2Client(),
-      new GetObjectCommand({
-        Bucket: getR2BucketName(),
-        Key: progress.audioKey,
-        ResponseContentDisposition: "inline",
-      }),
-      { expiresIn: 300 },
-    );
-    return NextResponse.redirect(downloadUrl, 307);
+    if (isR2Configured()) {
+      const downloadUrl = await getSignedUrl(
+        getR2Client(),
+        new GetObjectCommand({
+          Bucket: getR2BucketName(),
+          Key: progress.audioKey,
+          ResponseContentDisposition: "inline",
+        }),
+        { expiresIn: 300 },
+      );
+      return NextResponse.redirect(downloadUrl, 307);
+    }
+
+    // 本地兜底模式：直接流式返回音频文件
+    const stored = await loadAudioObject(progress.audioKey);
+    return new NextResponse(Buffer.from(stored.bytes), {
+      headers: {
+        "Content-Type": stored.contentType,
+        "Content-Length": String(stored.size),
+        "Cache-Control": "private, max-age=300",
+      },
+    });
   } catch (error) {
     console.error("[GET /api/progress/:exerciseId/audio]", error);
     return apiError("AUDIO_PLAYBACK_FAILED", "录音暂时无法播放", 500);

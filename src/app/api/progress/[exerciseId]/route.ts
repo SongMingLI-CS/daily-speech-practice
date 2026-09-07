@@ -1,13 +1,12 @@
-import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
 import { userProgress } from "@/db/schema";
+import { deleteAudioObject } from "@/lib/audio-store";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
-import { getR2BucketName, getR2Client } from "@/lib/r2";
 
 interface RouteContext {
   params: Promise<{ exerciseId: string }>;
@@ -44,12 +43,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
 
     if (row.audioKey) {
       try {
-        await getR2Client().send(
-          new DeleteObjectCommand({
-            Bucket: getR2BucketName(),
-            Key: row.audioKey,
-          }),
-        );
+        await deleteAudioObject(row.audioKey);
       } catch (cleanupError) {
         console.warn("[DELETE /api/progress/:exerciseId] 音频清理失败", cleanupError);
       }

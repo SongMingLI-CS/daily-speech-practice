@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import {
-  DeleteObjectCommand,
-  HeadObjectCommand,
-  PutObjectCommand,
-} from "@aws-sdk/client-s3";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
@@ -12,6 +8,11 @@ import { NextRequest } from "next/server";
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
 import { exercises, userProgress } from "@/db/schema";
+import {
+  deleteAudioObject,
+  isR2Configured,
+  statAudioObject,
+} from "@/lib/audio-store";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
 import { getR2BucketName, getR2Client } from "@/lib/r2";
@@ -58,26 +59,38 @@ export async function POST(request: NextRequest) {
       String(exercise.id),
       `${randomUUID()}.${extensionFor(parsed.data.contentType)}`,
     ].join("/");
-    const command = new PutObjectCommand({
-      Bucket: getR2BucketName(),
-      Key: objectKey,
-      ContentType: parsed.data.contentType,
-      Metadata: {
-        userId: currentUser.id,
-        exerciseId: String(exercise.id),
-        declaredSize: String(parsed.data.sizeBytes),
-      },
-    });
-    const uploadUrl = await getSignedUrl(getR2Client(), command, {
-      expiresIn: UPLOAD_EXPIRES_IN_SECONDS,
-    });
 
+    if (isR2Configured()) {
+      const command = new PutObjectCommand({
+        Bucket: getR2BucketName(),
+        Key: objectKey,
+        ContentType: parsed.data.contentType,
+        Metadata: {
+          userId: currentUser.id,
+          exerciseId: String(exercise.id),
+          declaredSize: String(parsed.data.sizeBytes),
+        },
+      });
+      const uploadUrl = await getSignedUrl(getR2Client(), command, {
+        expiresIn: UPLOAD_EXPIRES_IN_SECONDS,
+      });
+      const data: AudioUploadAuthorization = {
+        mode: "r2",
+        uploadUrl,
+        objectKey,
+        expiresInSeconds: UPLOAD_EXPIRES_IN_SECONDS,
+      };
+      return apiSuccess(data, "上传授权已创建");
+    }
+
+    // 本地兜底模式：不签名 URL，由客户端把音频正文 POST 到 body 端点
     const data: AudioUploadAuthorization = {
-      uploadUrl,
+      mode: "local",
+      uploadUrl: null,
       objectKey,
       expiresInSeconds: UPLOAD_EXPIRES_IN_SECONDS,
     };
-    return apiSuccess(data, "上传授权已创建");
+    return apiSuccess(data, "上传授权已创建（本地存储）");
   } catch (error) {
     console.error("[POST /api/uploads/audio]", error);
     return apiError("UPLOAD_AUTHORIZATION_FAILED", "暂时无法上传录音", 500);
@@ -122,13 +135,11 @@ export async function PATCH(request: NextRequest) {
     .limit(1);
 
   try {
-    const metadata = await getR2Client().send(
-      new HeadObjectCommand({ Bucket: getR2BucketName(), Key: objectKey }),
-    );
-    if (!metadata.ContentLength || metadata.ContentLength > MAX_AUDIO_BYTES) {
+    const metadata = await statAudioObject(objectKey);
+    if (!metadata.size || metadata.size > MAX_AUDIO_BYTES) {
       return apiError("AUDIO_TOO_LARGE", "录音文件无效或超过 20MB", 400);
     }
-    if (!metadata.ContentType?.startsWith("audio/")) {
+    if (!metadata.contentType.startsWith("audio/")) {
       return apiError("INVALID_AUDIO_TYPE", "录音文件格式无效", 400);
     }
 
@@ -167,12 +178,7 @@ export async function PATCH(request: NextRequest) {
 
     if (existing?.audioKey && existing.audioKey !== objectKey) {
       try {
-        await getR2Client().send(
-          new DeleteObjectCommand({
-            Bucket: getR2BucketName(),
-            Key: existing.audioKey,
-          }),
-        );
+        await deleteAudioObject(existing.audioKey);
       } catch (cleanupError) {
         console.error(
           "[PATCH /api/uploads/audio] failed to clean up old recording",

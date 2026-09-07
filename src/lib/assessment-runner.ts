@@ -1,12 +1,11 @@
 import "server-only";
 
-import { GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/db";
 import { exercises, userProgress, type UserProgress } from "@/db/schema";
-import { getR2BucketName, getR2Client } from "@/lib/r2";
+import { loadAudioObject } from "@/lib/audio-store";
 import {
   calculateCompletenessScore,
   calculateFluencyScore,
@@ -310,24 +309,15 @@ export async function runAssessmentJob(
     const durationMs = progress?.audioDurationMs;
     if (!durationMs || durationMs <= 0) throw new Error("AUDIO_DURATION_MISSING");
 
-    const r2 = getR2Client();
-    const bucket = getR2BucketName();
-    const metadata = await r2.send(
-      new HeadObjectCommand({ Bucket: bucket, Key: objectKey }),
-    );
-    if (!metadata.ContentLength || metadata.ContentLength > MAX_AUDIO_BYTES) {
+    const stored = await loadAudioObject(objectKey);
+    if (!stored.size || stored.size > MAX_AUDIO_BYTES) {
       throw new Error("AUDIO_TOO_LARGE");
     }
-    const contentType = metadata.ContentType ?? "audio/webm";
-    if (!contentType.startsWith("audio/")) throw new Error("INVALID_AUDIO_TYPE");
-
-    const object = await r2.send(new GetObjectCommand({ Bucket: bucket, Key: objectKey }));
-    if (!object.Body) throw new Error("AUDIO_NOT_FOUND");
-    const bytes = await object.Body.transformToByteArray();
+    if (!stored.contentType.startsWith("audio/")) throw new Error("INVALID_AUDIO_TYPE");
 
     const transcription = await transcribeAudio(
-      bytes,
-      contentType,
+      stored.bytes,
+      stored.contentType,
       exercise.language,
       exercise.content,
     );
