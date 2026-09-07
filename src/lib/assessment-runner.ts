@@ -170,8 +170,17 @@ async function transcribeAudio(
   language: "zh" | "en",
   referenceText: string,
 ): Promise<TranscriptionResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.TRANSCRIPTION_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("TRANSCRIPTION_NOT_CONFIGURED");
+
+  // 默认 OpenAI；可指向任意 OpenAI 兼容的 audio/transcriptions 服务
+  // 例如 Groq(https://api.groq.com/openai/v1) / 硅基流动(https://api.siliconflow.cn/v1)
+  const baseUrl = (
+    process.env.OPENAI_TRANSCRIPTION_BASE_URL || "https://api.openai.com/v1"
+  ).replace(/\/+$/, "");
+  const model = process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
+  // OpenAI 专属增强参数（prompt 提示词、logprobs）。第三方服务若不支持可设 0 关闭。
+  const sendOpenAiExtras = (process.env.OPENAI_TRANSCRIPTION_EXTRAS ?? "1") !== "0";
 
   const audioBuffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(audioBuffer).set(bytes);
@@ -181,13 +190,15 @@ async function transcribeAudio(
     new Blob([audioBuffer], { type: contentType }),
     `recording.${contentType.includes("ogg") ? "ogg" : contentType.includes("mp4") ? "m4a" : "webm"}`,
   );
-  form.append("model", process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe");
+  form.append("model", model);
   form.append("language", language);
   form.append("response_format", "json");
-  form.append("include[]", "logprobs");
-  form.append("prompt", referenceText.slice(0, 2_000));
+  if (sendOpenAiExtras) {
+    form.append("include[]", "logprobs");
+    form.append("prompt", referenceText.slice(0, 2_000));
+  }
 
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+  const response = await fetch(`${baseUrl}/audio/transcriptions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
