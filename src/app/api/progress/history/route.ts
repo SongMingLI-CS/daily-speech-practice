@@ -22,11 +22,13 @@ export async function GET() {
   try {
     const rows = await db
       .select({
+        exerciseId: userProgress.exerciseId,
         date: exercises.date,
         score: userProgress.score,
         category: exercises.category,
         language: exercises.language,
         title: exercises.title,
+        completedAt: userProgress.completedAt,
       })
       .from(userProgress)
       .innerJoin(exercises, eq(userProgress.exerciseId, exercises.id))
@@ -65,11 +67,13 @@ export async function GET() {
       .map((row) => formatDateKey(row.completedAt, timeZone));
 
     const points = rows.map((row) => ({
+      exerciseId: row.exerciseId,
       date: row.date,
       score: row.score ?? 0,
       category: row.category,
       language: row.language,
       title: row.title,
+      completedAt: row.completedAt ? formatDateKey(row.completedAt, timeZone) : null,
     }));
     const stats = buildStreakStats(practiceDates, formatDateKey(new Date(), timeZone));
 

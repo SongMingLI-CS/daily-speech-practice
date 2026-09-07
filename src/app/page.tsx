@@ -522,9 +522,18 @@ export default function HomePage() {
                 <Link
                   href="/settings"
                   aria-label="设置"
+                  title="设置"
                   className="flex h-6 w-6 items-center justify-center rounded-full text-sm text-white/60 transition-colors hover:bg-white/10 hover:text-white"
                 >
                   ⚙
+                </Link>
+                <Link
+                  href="/records"
+                  aria-label="打卡记录"
+                  title="打卡记录"
+                  className="flex h-6 w-6 items-center justify-center rounded-full text-sm text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  📖
                 </Link>
                 <button
                   type="button"
