@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 
@@ -514,8 +515,15 @@ export default function HomePage() {
                       day: "numeric",
                     }).format(new Date())}
               </p>
-              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1.5 pl-4 pr-2 text-xs text-white/60">
+              <div className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 py-1 pl-4 pr-1.5 text-xs text-white/60">
                 <span className="max-w-40 truncate">{session?.user?.name ?? session?.user?.email}</span>
+                <Link
+                  href="/settings"
+                  aria-label="设置"
+                  className="flex h-6 w-6 items-center justify-center rounded-full text-sm text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  ⚙
+                </Link>
                 <button
                   type="button"
                   onClick={() => signOut({ callbackUrl: "/login" })}
