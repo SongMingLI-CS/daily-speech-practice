@@ -13,10 +13,11 @@ function StreakSummary({ stats }: { stats: StreakStats | null }) {
       : "从今天开始，建立你的每日口才习惯 ✦";
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/20 p-4 backdrop-blur-md">
+    <div className="animate-rise-in rounded-2xl border border-white/10 bg-black/20 p-4 backdrop-blur-md">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-baseline gap-2">
           <span className="text-xs tracking-widest text-white/50">连续打卡</span>
+          {stats.current > 0 && <span className="text-base leading-none">🔥</span>}
           <strong className="text-2xl leading-none text-amber-200">{stats.current}</strong>
           <span className="text-xs text-white/50">天</span>
         </div>

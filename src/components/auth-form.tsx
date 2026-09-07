@@ -80,12 +80,17 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#111] px-4 py-12 text-white">
-      <section className="w-full max-w-sm">
-        <p className="mb-3 text-xs uppercase tracking-[0.28em] text-white/40">
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-[#152820] via-[#10241c] to-[#0a1a12] px-4 py-12 text-white">
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -left-1/4 top-0 h-96 w-96 rounded-full bg-amber-300/5 blur-3xl" />
+        <div className="absolute -right-1/4 bottom-0 h-96 w-96 rounded-full bg-emerald-300/5 blur-3xl" />
+      </div>
+
+      <section className="animate-rise-in relative w-full max-w-sm rounded-3xl border border-white/10 bg-black/25 p-6 shadow-2xl shadow-black/40 backdrop-blur-md sm:p-8">
+        <p className="mb-3 text-xs uppercase tracking-[0.28em] text-amber-200/60">
           Daily Speech Practice
         </p>
-        <h1 className="mb-2 text-3xl font-semibold">
+        <h1 className="mb-2 text-3xl font-semibold text-amber-50">
           {isRegister ? "创建账号" : "欢迎回来"}
         </h1>
         <p className="mb-8 text-sm leading-6 text-white/50">
@@ -94,18 +99,18 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           {isRegister && (
-            <label className="block text-sm text-white/70">
+            <label className="block text-sm text-white/75">
               昵称
               <input
                 required
                 maxLength={40}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/40"
+                className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none transition-colors placeholder:text-white/25 focus:border-amber-200/50 focus:bg-white/[0.07]"
               />
             </label>
           )}
-          <label className="block text-sm text-white/70">
+          <label className="block text-sm text-white/75">
             邮箱
             <input
               required
@@ -113,10 +118,10 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
               autoComplete="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/40"
+              className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none transition-colors placeholder:text-white/25 focus:border-amber-200/50 focus:bg-white/[0.07]"
             />
           </label>
-          <label className="block text-sm text-white/70">
+          <label className="block text-sm text-white/75">
             密码
             <input
               required
@@ -126,7 +131,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
               autoComplete={isRegister ? "new-password" : "current-password"}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/40"
+              className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none transition-colors placeholder:text-white/25 focus:border-amber-200/50 focus:bg-white/[0.07]"
             />
           </label>
 
@@ -138,7 +143,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
 
           <button
             disabled={submitting}
-            className="w-full rounded-xl bg-white px-4 py-3 font-medium text-black transition hover:bg-white/85 disabled:opacity-50"
+            className="w-full rounded-xl bg-gradient-to-r from-amber-200/90 to-amber-100/80 px-4 py-3 font-semibold text-[#1A3020] shadow-lg shadow-amber-900/20 transition-all hover:from-amber-100 hover:to-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {submitting ? "处理中..." : isRegister ? "注册并登录" : "登录"}
           </button>
@@ -151,7 +156,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
                 key={provider.id}
                 type="button"
                 onClick={() => signIn(provider.id, { callbackUrl: "/" })}
-                className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/10"
+                className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-medium text-white transition hover:border-white/25 hover:bg-white/10"
               >
                 使用 {provider.name} 继续
               </button>
@@ -161,7 +166,10 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
 
         <p className="mt-6 text-sm text-white/50">
           {isRegister ? "已有账号？" : "还没有账号？"}{" "}
-          <Link className="text-white underline underline-offset-4" href={isRegister ? "/login" : "/register"}>
+          <Link
+            className="text-amber-200/90 underline underline-offset-4 transition-colors hover:text-amber-100"
+            href={isRegister ? "/login" : "/register"}
+          >
             {isRegister ? "直接登录" : "立即注册"}
           </Link>
         </p>

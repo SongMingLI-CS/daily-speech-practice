@@ -477,7 +477,7 @@ export default function HomePage() {
       : "bg-gradient-to-br from-[#122B46] via-[#0f2238] to-[#0a1628]";
 
   if (status === "loading" || status === "unauthenticated") {
-    return <div className="min-h-screen bg-[#111]" />;
+    return <div className="min-h-screen bg-gradient-to-br from-[#152820] via-[#10241c] to-[#0a1a12]" />;
   }
 
   return (
@@ -500,15 +500,30 @@ export default function HomePage() {
             >
               {language === "zh" ? "每日口才打卡" : "Daily Eloquence Check-in"}
             </h1>
-            <div className="mt-4 flex items-center justify-center gap-3 text-xs text-white/45">
-              <span>{session?.user?.name ?? session?.user?.email}</span>
-              <button
-                type="button"
-                onClick={() => signOut({ callbackUrl: "/login" })}
-                className="underline underline-offset-4 hover:text-white/80"
-              >
-                退出登录
-              </button>
+            <div className="mt-5 flex flex-col items-center gap-3">
+              <p className="text-xs tracking-[0.3em] text-white/35">
+                {language === "zh"
+                  ? new Intl.DateTimeFormat("zh-CN", {
+                      month: "long",
+                      day: "numeric",
+                      weekday: "long",
+                    }).format(new Date())
+                  : new Intl.DateTimeFormat("en-US", {
+                      weekday: "long",
+                      month: "long",
+                      day: "numeric",
+                    }).format(new Date())}
+              </p>
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1.5 pl-4 pr-2 text-xs text-white/60">
+                <span className="max-w-40 truncate">{session?.user?.name ?? session?.user?.email}</span>
+                <button
+                  type="button"
+                  onClick={() => signOut({ callbackUrl: "/login" })}
+                  className="rounded-full bg-white/10 px-3 py-1 text-white/75 transition-colors hover:bg-white/20 hover:text-white"
+                >
+                  退出登录
+                </button>
+              </div>
             </div>
           </div>
 

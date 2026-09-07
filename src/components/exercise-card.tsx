@@ -92,7 +92,7 @@ function ExerciseCard({
   };
 
   return (
-    <article className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] p-6 shadow-xl backdrop-blur-sm transition-all duration-300 hover:border-amber-200/20 hover:bg-white/[0.06] sm:p-8">
+    <article className="group animate-rise-in relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] p-6 shadow-xl backdrop-blur-sm transition-all duration-300 hover:border-amber-200/20 hover:bg-white/[0.06] sm:p-8">
       <div className="pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-amber-300/5 blur-2xl" />
 
       <header className="mb-6 flex flex-col items-center gap-3 text-center">
@@ -128,19 +128,27 @@ function ExerciseCard({
       </p>
 
       <div className="space-y-4 rounded-xl border border-white/10 bg-black/20 p-4">
-        <div className="flex items-center justify-between text-xs text-white/50">
-          <span>
-            {recorder.status === "recording"
-              ? "正在录音"
-              : recorder.status === "paused"
-                ? "录音已暂停"
-                : recorder.status === "requesting-permission"
-                  ? "等待麦克风权限"
-                  : recorder.recording
-                    ? "录音已完成"
-                    : "最长 03:00 · 已启用浏览器降噪"}
+        <div className="flex items-center justify-between gap-3 text-xs text-white/50">
+          <span className="flex min-w-0 items-center gap-2">
+            {recorder.status === "recording" && (
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-300/60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-300" />
+              </span>
+            )}
+            <span className="truncate">
+              {recorder.status === "recording"
+                ? "正在录音"
+                : recorder.status === "paused"
+                  ? "录音已暂停"
+                  : recorder.status === "requesting-permission"
+                    ? "等待麦克风权限"
+                    : recorder.recording
+                      ? "录音已完成"
+                      : "最长 03:00 · 已启用浏览器降噪"}
+            </span>
           </span>
-          <span>{formatDuration(recorder.elapsedMs)} / 03:00</span>
+          <span className="shrink-0">{formatDuration(recorder.elapsedMs)} / 03:00</span>
         </div>
 
         {(recorder.status === "recording" || recorder.status === "paused") && (

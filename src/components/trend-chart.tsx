@@ -19,10 +19,12 @@ function TrendChart({ points }: { points: Array<{ date: string; score: number }>
   const latest = points[points.length - 1].score;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/20 p-4 backdrop-blur-md">
+    <div className="animate-rise-in rounded-2xl border border-white/10 bg-black/20 p-4 backdrop-blur-md">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs tracking-widest text-white/50">近期评分趋势</span>
-        <span className="text-xs text-amber-200/80">最新 {latest}</span>
+        <span className="rounded-full border border-amber-200/20 bg-amber-200/10 px-2 py-0.5 text-xs text-amber-200/90">
+          最新 {latest}
+        </span>
       </div>
       <svg
         viewBox={`0 0 ${width} ${height}`}
