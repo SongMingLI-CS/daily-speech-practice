@@ -113,21 +113,21 @@ export const authOptions: NextAuthOptions = {
           })
           .onConflictDoNothing();
       } else {
-        await db.batch([
-          db.insert(users).values({
+        await db.transaction(async (tx) => {
+          await tx.insert(users).values({
             id: userId,
             email,
             name: user.name?.trim() || email.split("@")[0],
             image: user.image,
             emailVerified: new Date(),
-          }),
-          db.insert(oauthAccounts).values({
+          });
+          await tx.insert(oauthAccounts).values({
             provider: account.provider,
             providerAccountId: account.providerAccountId,
             userId,
-          }),
-          db.insert(userSettings).values({ userId }),
-        ]);
+          });
+          await tx.insert(userSettings).values({ userId });
+        });
       }
 
       user.id = userId;

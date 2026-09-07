@@ -51,11 +51,11 @@ export async function POST(request: NextRequest) {
   try {
     const passwordHash = await hash(password, 12);
     const userId = randomUUID();
-    await db.batch([
-      db.insert(users).values({ id: userId, email, name }),
-      db.insert(userCredentials).values({ userId, passwordHash }),
-      db.insert(userSettings).values({ userId }),
-    ]);
+    await db.transaction(async (tx) => {
+      await tx.insert(users).values({ id: userId, email, name });
+      await tx.insert(userCredentials).values({ userId, passwordHash });
+      await tx.insert(userSettings).values({ userId });
+    });
 
     return apiSuccess({ id: userId, email, name }, "注册成功", 201);
   } catch (error) {
