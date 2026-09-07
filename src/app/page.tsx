@@ -21,6 +21,7 @@ import {
   parseGenerateExercisesResponse,
 } from "@/types/exercise";
 import { ExerciseCard, type AssessmentFailure } from "@/components/exercise-card";
+import { AchievementsPanel } from "@/components/achievements-panel";
 import { PracticeCalendar } from "@/components/practice-calendar";
 import { StreakSummary } from "@/components/streak-summary";
 import { TrendChart } from "@/components/trend-chart";
@@ -602,6 +603,7 @@ export default function HomePage() {
 
         <main className="space-y-6">
           <StreakSummary stats={streakStats} />
+          <AchievementsPanel stats={streakStats} />
           <TrendChart points={history} />
           <PracticeCalendar />
           {loading ? (
