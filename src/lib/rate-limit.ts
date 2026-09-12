@@ -8,6 +8,7 @@ export type RateLimitPolicy =
   | "login"
   | "register"
   | "generate"
+  | "exercisesToday"
   | "upload"
   | "assessment"
   | "audio"
@@ -35,9 +36,10 @@ const POLICY_CONFIG: Record<
   login: { requests: 10, windowMs: 15 * 60_000, duration: "15 m" },
   register: { requests: 5, windowMs: 60 * 60_000, duration: "1 h" },
   generate: { requests: 10, windowMs: 60 * 60_000, duration: "1 h" },
+  exercisesToday: { requests: 240, windowMs: 60 * 60_000, duration: "1 h" },
   upload: { requests: 20, windowMs: 60 * 60_000, duration: "1 h" },
   assessment: { requests: 30, windowMs: 60 * 60_000, duration: "1 h" },
-  assessmentStatus: { requests: 600, windowMs: 60 * 60_000, duration: "1 h" },
+  assessmentStatus: { requests: 3_000, windowMs: 60 * 60_000, duration: "1 h" },
   audio: { requests: 120, windowMs: 60 * 60_000, duration: "1 h" },
   checkin: { requests: 60, windowMs: 60_000, duration: "1 m" },
   settings: { requests: 30, windowMs: 60_000, duration: "1 m" },
@@ -109,13 +111,24 @@ function checkLocalLimit(policy: RateLimitPolicy, identifier: string): RateLimit
   };
 }
 
+/**
+ * 生产环境默认要求分布式限流（Upstash），避免多实例下限额被放大。
+ * 单实例自托管部署可显式设置 RATE_LIMIT_ALLOW_IN_MEMORY=1 启用进程内限流。
+ */
+function isInMemoryLimiterAllowed(): boolean {
+  return (
+    process.env.NODE_ENV !== "production" ||
+    process.env.RATE_LIMIT_ALLOW_IN_MEMORY === "1"
+  );
+}
+
 export async function checkRateLimit(
   policy: RateLimitPolicy,
   identifier: string,
 ): Promise<RateLimitResult> {
   const limiter = getDistributedLimiter(policy);
   if (limiter) return limiter.limit(identifier);
-  if (process.env.NODE_ENV === "production") {
+  if (!isInMemoryLimiterAllowed()) {
     throw new RateLimitConfigurationError();
   }
   return checkLocalLimit(policy, identifier);
