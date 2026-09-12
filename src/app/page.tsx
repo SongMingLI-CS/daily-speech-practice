@@ -48,7 +48,7 @@ function LoadingSpinner() {
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-24">
       <div className="h-10 w-10 animate-spin rounded-full border-2 border-amber-200/30 border-t-amber-300" />
-      <p className="text-sm tracking-widest text-amber-100/60">正在生成今日挑战...</p>
+      <p className="text-sm tracking-widest text-amber-100/60">正在加载今日练习...</p>
     </div>
   );
 }
@@ -101,6 +101,8 @@ export default function HomePage() {
   const [history, setHistory] = useState<Array<{ date: string; score: number }>>([]);
   const [streakStats, setStreakStats] = useState<StreakStats | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
   const activePollIdsRef = useRef<Set<number>>(new Set());
   /** 用户是否已手动改过语言/篇数（用于避免慢速的设置请求覆盖用户刚做的选择） */
   const userAdjustedSettingsRef = useRef(false);
@@ -145,6 +147,8 @@ export default function HomePage() {
       }
     } catch {
       // 偏好读取失败不影响主流程，沿用默认值
+    } finally {
+      setSettingsLoaded(true);
     }
   }, []);
 
@@ -342,6 +346,49 @@ export default function HomePage() {
     }
   };
 
+  /** 从服务端恢复「今日挑战 + 打卡进度」，不会触发 AI 生成。 */
+  const loadTodayExercises = async (
+    targetLanguage: ExerciseLanguage,
+    targetCount: ExerciseCount,
+    options: { silent?: boolean; active?: () => boolean } = {},
+  ) => {
+    const isActive = () => options.active?.() ?? true;
+    setLoading(true);
+    if (!options.silent) setError(null);
+    try {
+      const response = await fetch(
+        `/api/exercises/today?language=${targetLanguage}&count=${targetCount}`,
+      );
+      const payload = parseGenerateExercisesResponse(await response.json());
+      if (!isActive()) return;
+      if (response.status === 401) {
+        router.replace("/login");
+        return;
+      }
+      if (!response.ok || payload.code !== "OK" || !payload.data) {
+        throw new Error(payload.message);
+      }
+
+      const { exercises: list, completedExerciseIds } = payload.data;
+      setExercises(list);
+      setCheckedInIds(new Set(completedExerciseIds));
+      setSubmittingId(null);
+      resumeFromProgress(list);
+    } catch (err) {
+      if (!isActive()) return;
+      const message = err instanceof Error ? err.message : "今日练习加载失败，请稍后重试";
+      if (options.silent) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[home] 恢复今日挑战失败", err);
+        }
+      } else {
+        setError(message);
+      }
+    } finally {
+      if (isActive()) setLoading(false);
+    }
+  };
+
   const handleLanguageChange = (nextLanguage: ExerciseLanguage) => {
     if (nextLanguage === language) return;
     userAdjustedSettingsRef.current = true;
@@ -356,6 +403,8 @@ export default function HomePage() {
     activePollIdsRef.current.clear();
     setError(null);
     void persistSettings(nextLanguage, count);
+    // 切换语言后自动恢复该语言今日已生成的挑战（若有），避免来回切换后内容“消失”
+    void loadTodayExercises(nextLanguage, count, { silent: true });
   };
 
   const handleCountChange = (nextCount: ExerciseCount) => {
@@ -363,6 +412,8 @@ export default function HomePage() {
     userAdjustedSettingsRef.current = true;
     setCount(nextCount);
     void persistSettings(language, nextCount);
+    // 篇数变化后按新数量重新加载今日挑战的展示（只做截取/补齐，不触发 AI 生成）。
+    void loadTodayExercises(language, nextCount, { silent: true });
   };
 
   const handleGenerate = async () => {
@@ -493,6 +544,25 @@ export default function HomePage() {
       return next;
     });
   };
+
+  // 刷新或重新进入首页后，从服务端恢复「今日挑战 + 打卡进度」，避免数据看起来“丢失”。
+  useEffect(() => {
+    if (status !== "authenticated" || !settingsLoaded) return;
+    let cancelled = false;
+
+    const saved = settingsRef.current;
+    void loadTodayExercises(
+      saved?.defaultLanguage ?? "zh",
+      saved?.dailyCount ?? 3,
+      { silent: true, active: () => !cancelled },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+    // 只在用户偏好加载完成（首次为 true）后执行一次，语言/篇数以服务端保存值为准。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, settingsLoaded, status]);
 
   const pageBg =
     language === "zh"

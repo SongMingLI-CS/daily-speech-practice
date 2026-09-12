@@ -1,12 +1,13 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, gte, isNotNull, lt } from "drizzle-orm";
 import { NextRequest } from "next/server";
 
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
-import { userProgress, userSettings } from "@/db/schema";
+import { userProgress } from "@/db/schema";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
 import { formatDateKey } from "@/lib/date";
+import { getUserTimeZone } from "@/lib/user-settings";
 
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -35,12 +36,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const [settings] = await db
-      .select({ timeZone: userSettings.timeZone })
-      .from(userSettings)
-      .where(eq(userSettings.userId, currentUser.id))
-      .limit(1);
-    const timeZone = settings?.timeZone ?? "Asia/Shanghai";
+    const timeZone = await getUserTimeZone(currentUser.id);
+
+    // 只取「该月 ±1 天」的完成记录：时区偏移最大约 ±14 小时，1 天余量足够覆盖
+    // 月首/月末的跨时区边界，之后在 JS 中按用户时区精确过滤。
+    const [year, monthIndex] = month.split("-").map(Number);
+    const rangeStart = new Date(Date.UTC(year, monthIndex - 1, 1) - 24 * 60 * 60 * 1_000);
+    const rangeEnd = new Date(Date.UTC(year, monthIndex, 1) + 24 * 60 * 60 * 1_000);
 
     const completedRows = await db
       .select({ completedAt: userProgress.completedAt, score: userProgress.score })
@@ -51,6 +53,8 @@ export async function GET(request: NextRequest) {
           eq(userProgress.status, "completed"),
           isNotNull(userProgress.score),
           isNotNull(userProgress.completedAt),
+          gte(userProgress.completedAt, rangeStart),
+          lt(userProgress.completedAt, rangeEnd),
         ),
       );
 

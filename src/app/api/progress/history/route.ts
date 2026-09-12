@@ -2,11 +2,12 @@ import { and, desc, eq, isNotNull } from "drizzle-orm";
 
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
-import { exercises, userProgress, userSettings } from "@/db/schema";
+import { exercises, userProgress } from "@/db/schema";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
 import { formatDateKey } from "@/lib/date";
 import { buildStreakStats } from "@/lib/streak";
+import { getUserTimeZone } from "@/lib/user-settings";
 
 export async function GET() {
   const currentUser = await getCurrentUser();
@@ -43,12 +44,7 @@ export async function GET() {
       .orderBy(desc(userProgress.completedAt), desc(userProgress.id))
       .limit(90);
 
-    const [settings] = await db
-      .select({ timeZone: userSettings.timeZone })
-      .from(userSettings)
-      .where(eq(userSettings.userId, currentUser.id))
-      .limit(1);
-    const timeZone = settings?.timeZone ?? "Asia/Shanghai";
+    const timeZone = await getUserTimeZone(currentUser.id);
 
     // 打卡天数按用户时区的自然日统计（全量，不做 90 条截断）
     const completedRows = await db

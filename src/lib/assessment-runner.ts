@@ -6,6 +6,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { exercises, userProgress, type UserProgress } from "@/db/schema";
 import { loadAudioObject } from "@/lib/audio-store";
+import { fetchWithRetry } from "@/lib/http";
 import {
   calculateCompletenessScore,
   calculateFluencyScore,
@@ -197,12 +198,16 @@ async function transcribeAudio(
     form.append("prompt", referenceText.slice(0, 2_000));
   }
 
-  const response = await fetch(`${baseUrl}/audio/transcriptions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-    signal: AbortSignal.timeout(90_000),
-  });
+  const response = await fetchWithRetry(
+    `${baseUrl}/audio/transcriptions`,
+    { method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: form },
+    {
+      timeoutMs: 90_000,
+      retries: 2,
+      onRetry: (attempt, error) =>
+        console.warn("[transcription] provider retry", { attempt, error }),
+    },
+  );
   if (!response.ok) throw new Error("TRANSCRIPTION_PROVIDER_ERROR");
 
   const payload = (await response.json()) as Partial<TranscriptionResult>;
@@ -222,35 +227,43 @@ async function refineAssessmentWithDeepSeek(
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error("ASSESSMENT_NOT_CONFIGURED");
 
-  const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+  const response = await fetchWithRetry(
+    "https://api.deepseek.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是严格、友善的口才教练。根据参考文本、转写文本、录音时长和基线分数给出评分。只返回 JSON：pronunciationScore、fluencyScore、completenessScore、feedback。分数为 0-100 整数；除非证据充分，各维度不要偏离基线超过 15 分。反馈必须具体、简短，不要声称听到了转写无法证明的音色细节。",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              language,
+              referenceText: referenceText.slice(0, 10_000),
+              transcript: transcript.slice(0, 10_000),
+              durationMs,
+              baseline,
+            }),
+          },
+        ],
+      }),
     },
-    body: JSON.stringify({
-      model: "deepseek-chat",
-      temperature: 0.2,
-      messages: [
-        {
-          role: "system",
-          content:
-            "你是严格、友善的口才教练。根据参考文本、转写文本、录音时长和基线分数给出评分。只返回 JSON：pronunciationScore、fluencyScore、completenessScore、feedback。分数为 0-100 整数；除非证据充分，各维度不要偏离基线超过 15 分。反馈必须具体、简短，不要声称听到了转写无法证明的音色细节。",
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            language,
-            referenceText: referenceText.slice(0, 10_000),
-            transcript: transcript.slice(0, 10_000),
-            durationMs,
-            baseline,
-          }),
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(60_000),
-  });
+    {
+      timeoutMs: 60_000,
+      retries: 2,
+      onRetry: (attempt, error) =>
+        console.warn("[assessment] DeepSeek retry", { attempt, error }),
+    },
+  );
   if (!response.ok) throw new Error("ASSESSMENT_PROVIDER_ERROR");
 
   const payload = (await response.json()) as {

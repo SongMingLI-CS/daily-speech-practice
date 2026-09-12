@@ -7,11 +7,17 @@ import { db } from "@/db";
 import { userSettings } from "@/db/schema";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
+import { isValidTimeZone } from "@/lib/date";
 
 const settingsSchema = z.object({
   defaultLanguage: z.enum(["zh", "en"]),
   dailyCount: z.union([z.literal(1), z.literal(3), z.literal(5)]),
-  timeZone: z.string().trim().min(1).max(80),
+  timeZone: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .refine(isValidTimeZone, "时区无效，请选择有效的 IANA 时区"),
 });
 
 export async function GET() {

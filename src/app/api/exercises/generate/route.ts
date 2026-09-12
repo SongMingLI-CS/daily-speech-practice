@@ -1,25 +1,24 @@
 import { randomUUID } from "node:crypto";
 
-import { and, asc, eq, inArray, lt } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { NextRequest } from "next/server";
 
 import { getCurrentUser } from "@/auth";
 import { db } from "@/db";
-import {
-  exerciseGenerationLocks,
-  exercises,
-  userProgress,
-} from "@/db/schema";
+import { exerciseGenerationLocks, exercises } from "@/db/schema";
 import { getRateLimitResponse } from "@/lib/api-rate-limit";
 import { apiError, apiSuccess } from "@/lib/api-response";
 import { getTodayDateString } from "@/lib/date";
 import {
-  buildCompletedExerciseIds,
-  mergeExercisesWithProgress,
+  fetchExercisesByDate,
+  loadExercisesWithProgress,
+} from "@/lib/exercise-queries";
+import { fetchWithRetry } from "@/lib/http";
+import { getUserTimeZone } from "@/lib/user-settings";
+import {
   type ExerciseCount,
   type ExerciseLanguage,
   type GenerateExercisesData,
-  type ProgressInput,
 } from "@/types/exercise";
 
 const VALID_LANGUAGES = ["zh", "en"] as const;
@@ -88,14 +87,6 @@ function parseDeepSeekExercises(rawContent: string): GeneratedExercisePayload[] 
   });
 }
 
-async function fetchTodayExercises(language: ExerciseLanguage, today: string) {
-  return db
-    .select()
-    .from(exercises)
-    .where(and(eq(exercises.date, today), eq(exercises.language, language)))
-    .orderBy(asc(exercises.index), asc(exercises.id));
-}
-
 async function acquireGenerationLock(language: ExerciseLanguage, today: string) {
   const ownerToken = randomUUID();
   const now = new Date();
@@ -129,49 +120,6 @@ async function releaseGenerationLock(
     );
 }
 
-async function fetchCompletedProgress(userId: string, exerciseIds: number[]) {
-  if (exerciseIds.length === 0) {
-    return {
-      completedExerciseIds: [] as number[],
-      progressByExerciseId: new Map<number, ProgressInput>(),
-    };
-  }
-
-  const records = await db
-    .select({
-      exerciseId: userProgress.exerciseId,
-      status: userProgress.status,
-      completedAt: userProgress.completedAt,
-      audioUrl: userProgress.audioUrl,
-      score: userProgress.score,
-      pronunciationScore: userProgress.pronunciationScore,
-      fluencyScore: userProgress.fluencyScore,
-      completenessScore: userProgress.completenessScore,
-      transcript: userProgress.transcript,
-      feedback: userProgress.feedback,
-      lastError: userProgress.lastError,
-    })
-    .from(userProgress)
-    .where(
-      and(
-        eq(userProgress.userId, userId),
-        inArray(userProgress.exerciseId, exerciseIds),
-      ),
-    );
-
-  return {
-    completedExerciseIds: buildCompletedExerciseIds(
-      records.filter((record) => record.status === "completed"),
-    ),
-    progressByExerciseId: new Map(
-      records.map((record) => [
-        record.exerciseId,
-        record,
-      ]),
-    ),
-  };
-}
-
 async function buildResponse(
   userId: string,
   language: ExerciseLanguage,
@@ -180,16 +128,19 @@ async function buildResponse(
   cached: boolean,
   generated: number,
 ): Promise<GenerateExercisesData> {
-  const rows = (await fetchTodayExercises(language, today)).slice(0, count);
-  const { completedExerciseIds, progressByExerciseId } =
-    await fetchCompletedProgress(userId, rows.map((row) => row.id));
+  const { exercises, completedExerciseIds } = await loadExercisesWithProgress(
+    userId,
+    language,
+    count,
+    today,
+  );
   return {
     cached,
     generated,
     date: today,
     language,
     count,
-    exercises: mergeExercisesWithProgress(rows, progressByExerciseId),
+    exercises,
     completedExerciseIds,
   };
 }
@@ -201,22 +152,30 @@ async function generateExercisesWithDeepSeek(
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error("AI_NOT_CONFIGURED");
 
-  const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+  const response = await fetchWithRetry(
+    "https://api.deepseek.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: `生成 ${count} 篇语言为 ${language} 的练习。` },
+        ],
+        temperature: 0.8,
+      }),
     },
-    body: JSON.stringify({
-      model: "deepseek-chat",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `生成 ${count} 篇语言为 ${language} 的练习。` },
-      ],
-      temperature: 0.8,
-    }),
-    signal: AbortSignal.timeout(60_000),
-  });
+    {
+      timeoutMs: 60_000,
+      retries: 2,
+      onRetry: (attempt, error) =>
+        console.warn("[generate] DeepSeek retry", { attempt, error }),
+    },
+  );
 
   if (!response.ok) throw new Error("AI_PROVIDER_ERROR");
   const data = (await response.json()) as {
@@ -252,10 +211,12 @@ export async function POST(request: NextRequest) {
   }
 
   const { language, count } = body;
-  const today = getTodayDateString();
 
   try {
-    const existing = await fetchTodayExercises(language, today);
+    // 与打卡/连续天数保持同一时区口径：以用户设置的时区判定「今天」。
+    const timeZone = await getUserTimeZone(currentUser.id);
+    const today = getTodayDateString(timeZone);
+    const existing = await fetchExercisesByDate(language, today);
     if (existing.length >= count) {
       return apiSuccess(
         await buildResponse(currentUser.id, language, count, today, true, 0),
@@ -272,7 +233,7 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      const refreshed = await fetchTodayExercises(language, today);
+      const refreshed = await fetchExercisesByDate(language, today);
       if (refreshed.length < count) {
         const need = count - refreshed.length;
         const generated = await generateExercisesWithDeepSeek(language, need);
@@ -306,6 +267,16 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     console.error("[POST /api/exercises/generate]", error);
+    const reason = error instanceof Error ? error.message : "";
+    if (reason === "AI_NOT_CONFIGURED") {
+      return apiError("AI_NOT_CONFIGURED", "AI 生成服务未配置，请联系管理员", 503);
+    }
+    if (reason === "AI_PROVIDER_ERROR") {
+      return apiError("AI_PROVIDER_ERROR", "AI 服务暂时不可用，请稍后重试", 502);
+    }
+    if (reason === "AI_RESPONSE_INVALID") {
+      return apiError("AI_RESPONSE_INVALID", "AI 返回内容格式异常，请重试", 502);
+    }
     return apiError("GENERATION_FAILED", "生成练习失败，请稍后重试", 500);
   }
 }

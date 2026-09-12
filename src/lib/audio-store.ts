@@ -10,7 +10,10 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 
+import { isR2Configured } from "@/lib/audio-storage-config";
 import { getR2BucketName, getR2Client } from "@/lib/r2";
+
+export { isR2Configured };
 
 export interface StoredAudio {
   bytes: Uint8Array;
@@ -20,12 +23,14 @@ export interface StoredAudio {
 
 const LOCAL_ROOT = path.join(process.cwd(), "data", "audio");
 
-export function isR2Configured(): boolean {
-  return Boolean(
-    process.env.R2_ENDPOINT &&
-      process.env.R2_ACCESS_KEY_ID &&
-      process.env.R2_SECRET_ACCESS_KEY &&
-      process.env.R2_BUCKET_NAME,
+let warnedAboutLocalStorage = false;
+
+function warnAboutLocalStorageOnce(): void {
+  if (warnedAboutLocalStorage) return;
+  warnedAboutLocalStorage = true;
+  console.warn(
+    "[audio-store] R2 not configured — storing recordings on the local filesystem. " +
+      "Only safe for single-instance deployments with a persistent disk (not serverless).",
   );
 }
 
@@ -77,6 +82,7 @@ export async function saveAudioObject(
   }
 
   await ensureLocalRoot();
+  warnAboutLocalStorageOnce();
   const filePath = localPathForKey(key);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, Buffer.from(bytes));
